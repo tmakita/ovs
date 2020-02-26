@@ -8,6 +8,9 @@
 AUTOMAKE_OPTIONS = foreign subdir-objects
 ACLOCAL_AMFLAGS = -I m4
 SUBDIRS = datapath
+if HAVE_XDP_OFFLOAD
+SUBDIRS += bpf
+endif
 
 AM_CPPFLAGS = $(SSL_CFLAGS)
 AM_LDFLAGS = $(SSL_LDFLAGS)
@@ -199,7 +202,9 @@ ALL_LOCAL += dist-hook-git
 dist-hook-git: distfiles
 	@if test -e $(srcdir)/.git && (git --version) >/dev/null 2>&1; then \
 	  (cd datapath && $(MAKE) distfiles); \
-	  (cat distfiles; sed 's|^|datapath/|' datapath/distfiles) | \
+	  (cd bpf && $(MAKE) distfiles); \
+	  (cat distfiles; sed 's|^|datapath/|' datapath/distfiles; \
+	   sed 's|^|bpf/|' bpf/distfiles) | \
 	    LC_ALL=C sort -u > all-distfiles; \
 	  (cd $(srcdir) && git ls-files) | grep -v '\.gitignore$$' | \
 	    grep -v '\.gitattributes$$' | \
@@ -235,7 +240,7 @@ config-h-check:
 	@cd $(srcdir); \
 	if test -e .git && (git --version) >/dev/null 2>&1 && \
 	  git --no-pager grep -L '#include <config\.h>' `git ls-files | grep '\.c$$' | \
-	    grep -vE '^datapath|^lib/sflow|^third-party|^datapath-windows|^python'`; \
+	    grep -vE '^datapath|^lib/sflow|^third-party|^datapath-windows|^python|^bpf'`; \
 	then \
 	  echo "See above for list of violations of the rule that"; \
 	  echo "every C source file must #include <config.h>."; \
