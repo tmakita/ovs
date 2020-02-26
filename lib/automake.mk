@@ -421,10 +421,14 @@ endif
 
 if HAVE_AF_XDP
 lib_libopenvswitch_la_SOURCES += \
+	lib/bpf-util.c \
+	lib/bpf-util.h \
 	lib/netdev-afxdp-pool.c \
 	lib/netdev-afxdp-pool.h \
 	lib/netdev-afxdp.c \
-	lib/netdev-afxdp.h
+	lib/netdev-afxdp.h \
+	lib/netdev-offload-xdp.c \
+	lib/netdev-offload-xdp.h
 endif
 
 if DPDK_NETDEV

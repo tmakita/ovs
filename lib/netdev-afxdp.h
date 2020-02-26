@@ -44,6 +44,7 @@ struct netdev_stats;
 struct smap;
 struct xdp_umem;
 struct xsk_socket_info;
+struct bpf_object;
 
 int netdev_afxdp_rxq_construct(struct netdev_rxq *rxq_);
 void netdev_afxdp_rxq_destruct(struct netdev_rxq *rxq_);
@@ -70,6 +71,8 @@ int netdev_afxdp_get_custom_stats(const struct netdev *netdev,
 void free_afxdp_buf(struct dp_packet *p);
 int netdev_afxdp_reconfigure(struct netdev *netdev);
 void signal_remove_xdp(struct netdev *netdev);
+bool has_xdp_flowtable(struct netdev *netdev);
+struct bpf_object *get_xdp_object(struct netdev *netdev);
 
 #else /* !HAVE_AF_XDP */
 
