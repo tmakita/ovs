@@ -99,6 +99,7 @@ OVS_CHECK_DOT
 OVS_CHECK_IF_DL
 OVS_CHECK_STRTOK_R
 OVS_CHECK_LINUX_AF_XDP
+OVS_CHECK_LINUX_BPF
 AC_CHECK_DECLS([sys_siglist], [], [], [[#include <signal.h>]])
 AC_CHECK_MEMBERS([struct stat.st_mtim.tv_nsec, struct stat.st_mtimensec],
   [], [], [[#include <sys/stat.h>]])
@@ -198,6 +199,7 @@ AC_CONFIG_FILES(datapath/Makefile)
 AC_CONFIG_FILES(datapath/linux/Kbuild)
 AC_CONFIG_FILES(datapath/linux/Makefile)
 AC_CONFIG_FILES(datapath/linux/Makefile.main)
+AC_CONFIG_FILES(bpf/Makefile)
 AC_CONFIG_FILES(tests/atlocal)
 AC_CONFIG_FILES(lib/libopenvswitch.pc)
 AC_CONFIG_FILES(lib/libsflow.pc)
