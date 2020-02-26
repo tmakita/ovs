@@ -355,6 +355,9 @@ netdev_uninit_flow_api(struct netdev *netdev)
 
     ovsrcu_set(&netdev->flow_api, NULL);
     rfa = netdev_lookup_flow_api(flow_api->type);
+    if (rfa->flow_api->uninit_flow_api) {
+        rfa->flow_api->uninit_flow_api(netdev);
+    }
     ovs_refcount_unref(&rfa->refcnt);
 }
 

@@ -87,9 +87,12 @@ struct netdev_flow_api {
      * Return 0 if successful, otherwise returns a positive errno value. */
     int (*flow_get_n_flows)(struct netdev *, uint64_t *n_flows);
 
-    /* Initializies the netdev flow api.
+    /* Initializes the netdev flow api.
      * Return 0 if successful, otherwise returns a positive errno value. */
     int (*init_flow_api)(struct netdev *);
+
+    /* Uninitialize the netdev flow api. */
+    void (*uninit_flow_api)(struct netdev *);
 };
 
 int netdev_register_flow_api_provider(const struct netdev_flow_api *);
@@ -98,6 +101,9 @@ bool netdev_flow_api_equals(const struct netdev *, const struct netdev *);
 
 #ifdef __linux__
 extern const struct netdev_flow_api netdev_offload_tc;
+#ifdef HAVE_XDP_OFFLOAD
+extern const struct netdev_flow_api netdev_offload_xdp;
+#endif
 #endif
 
 #ifdef DPDK_NETDEV

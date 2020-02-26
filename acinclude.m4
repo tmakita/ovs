@@ -330,6 +330,31 @@ AC_DEFUN([OVS_CHECK_LINUX_AF_XDP], [
   AM_CONDITIONAL([HAVE_AF_XDP], test "$AF_XDP_ENABLE" = true)
 ])
 
+dnl OVS_CHECK_LINUX_XDP_OFFLOAD
+dnl
+dnl Check both llvm and libbpf support
+AC_DEFUN([OVS_CHECK_LINUX_XDP_OFFLOAD], [
+  AC_ARG_ENABLE([xdp_offload],
+                [AC_HELP_STRING([--enable-xdp-offload],
+                                [Compile XDP offload])],
+                [], [enable_xdp_offload=no])
+  AC_MSG_CHECKING([whether XDP offload is enabled])
+  if test "$enable_xdp_offload" != yes; then
+    AC_MSG_RESULT([no])
+    XDP_OFFLOAD_ENABLE=false
+  else
+    if test "$enable_afxdp" == no; then
+      AC_MSG_ERROR([XDP offload depends on afxdp. Please add --enable-afxdp.])
+    fi
+    AC_MSG_RESULT([yes])
+    XDP_OFFLOAD_ENABLE=true
+
+    AC_DEFINE([HAVE_XDP_OFFLOAD], [1],
+              [Define to 1 if XDP offload compilation is available and enabled.])
+  fi
+  AM_CONDITIONAL([HAVE_XDP_OFFLOAD], test "$XDP_OFFLOAD_ENABLE" = true)
+])
+
 dnl OVS_CHECK_DPDK
 dnl
 dnl Configure DPDK source tree
