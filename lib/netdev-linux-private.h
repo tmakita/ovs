@@ -121,6 +121,8 @@ struct netdev_linux {
     const char *xdp_obj_path;         /* XDP object file path. */
     const char *requested_xdp_obj;
     struct bpf_object *xdp_obj;
+
+    bool has_xdp_flowtable;
 #endif
 };
 

@@ -22,6 +22,7 @@
 #include "netdev-afxdp-pool.h"
 
 #include <bpf/bpf.h>
+#include <bpf/btf.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <linux/rtnetlink.h>
@@ -37,10 +38,13 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "bpf-util.h"
 #include "coverage.h"
 #include "dp-packet.h"
 #include "dpif-netdev.h"
 #include "fatal-signal.h"
+#include "netdev-offload-provider.h"
+#include "netdev-offload-xdp.h"
 #include "openvswitch/compiler.h"
 #include "openvswitch/dynamic-string.h"
 #include "openvswitch/list.h"
@@ -261,10 +265,204 @@ netdev_afxdp_sweep_unused_pools(void *aux OVS_UNUSED)
     ovs_mutex_unlock(&unused_pools_mutex);
 }
 
+bool
+has_xdp_flowtable(struct netdev *netdev)
+{
+    struct netdev_linux *dev = netdev_linux_cast(netdev);
+
+    return dev->has_xdp_flowtable;
+}
+
+struct bpf_object *
+get_xdp_object(struct netdev *netdev)
+{
+    struct netdev_linux *dev = netdev_linux_cast(netdev);
+
+    return dev->xdp_obj;
+}
+
+#ifdef HAVE_XDP_OFFLOAD
+static int
+xdp_preload(struct netdev *netdev, struct bpf_object *obj)
+{
+    static struct ovsthread_once output_map_once = OVSTHREAD_ONCE_INITIALIZER;
+    struct btf *btf;
+    struct bpf_map *flow_table, *subtbl_template, *subtbl_masks_hd, *xsks_map,
+                   *output_map;
+    const struct bpf_map_def *flow_table_def, *subtbl_def;
+    int flow_table_fd, subtbl_meta_fd, xsks_map_fd;
+    static int output_map_fd = -1;
+    int n_rxq, err;
+
+    btf = bpf_object__btf(obj);
+    if (!btf) {
+        VLOG_DBG("BPF object for netdev \"%s\" does not contain BTF",
+                 netdev_get_name(netdev));
+        return EOPNOTSUPP;
+    }
+    if (btf__find_by_name_kind(btf, ".ovs_meta", BTF_KIND_DATASEC) < 0) {
+        VLOG_DBG("\".ovs_meta\" datasec not found in BTF");
+        return EOPNOTSUPP;
+    }
+
+    flow_table = bpf_object__find_map_by_name(obj, "flow_table");
+    if (!flow_table) {
+        VLOG_DBG("%s: \"flow_table\" map does not exist",
+                 netdev_get_name(netdev));
+        return EOPNOTSUPP;
+    }
+
+    subtbl_template = bpf_object__find_map_by_name(obj, "subtbl_template");
+    if (!subtbl_template) {
+        VLOG_DBG("%s: \"subtbl_template\" map does not exist",
+                 netdev_get_name(netdev));
+        return EOPNOTSUPP;
+    }
+
+    output_map = bpf_object__find_map_by_name(obj, "output_map");
+    if (!output_map) {
+        VLOG_DBG("%s: \"output_map\" map does not exist",
+                 netdev_get_name(netdev));
+        return EOPNOTSUPP;
+    }
+
+    if (ovsthread_once_start(&output_map_once)) {
+        output_map_fd = bpf_create_map_name(BPF_MAP_TYPE_DEVMAP, "output_map",
+                                            sizeof(int), sizeof(int),
+                                            XDP_MAX_PORTS, 0);
+        if (output_map_fd < 0) {
+            err = errno;
+            VLOG_WARN("%s: Map creation for output_map failed: %s",
+                      netdev_get_name(netdev), ovs_strerror(errno));
+            ovsthread_once_done(&output_map_once);
+            return err;
+        }
+        ovsthread_once_done(&output_map_once);
+    }
+
+    flow_table_def = bpf_map__def(flow_table);
+    if (flow_table_def->type != BPF_MAP_TYPE_ARRAY_OF_MAPS) {
+        VLOG_WARN("%s: \"flow_table\" map type is not map-in-map array.",
+                  netdev_get_name(netdev));
+        return EINVAL;
+    }
+
+    subtbl_def = bpf_map__def(subtbl_template);
+    if (subtbl_def->type != BPF_MAP_TYPE_HASH) {
+        VLOG_WARN("%s: \"subtbl_templates\" map type is not hash-table",
+                  netdev_get_name(netdev));
+        return EINVAL;
+    }
+
+    subtbl_meta_fd = bpf_create_map(BPF_MAP_TYPE_HASH, subtbl_def->key_size,
+                                    subtbl_def->value_size,
+                                    subtbl_def->max_entries, 0);
+    if (subtbl_meta_fd < 0) {
+        err = errno;
+        VLOG_WARN("%s: Map creation for flow_table meta table failed: %s",
+                  netdev_get_name(netdev), ovs_strerror(errno));
+        return err;
+    }
+    flow_table_fd = bpf_create_map_in_map(BPF_MAP_TYPE_ARRAY_OF_MAPS,
+                                          "flow_table", sizeof(uint32_t),
+                                          subtbl_meta_fd,
+                                          flow_table_def->max_entries,
+                                          0);
+    if (flow_table_fd < 0) {
+        err = errno;
+        VLOG_WARN("%s: Map creation for flow_table failed: %s",
+                  netdev_get_name(netdev), ovs_strerror(errno));
+        close(subtbl_meta_fd);
+        return err;
+    }
+    close(subtbl_meta_fd);
+
+    err = bpf_map__reuse_fd(flow_table, flow_table_fd);
+    if (err) {
+        VLOG_WARN("%s: Failed to reuse flow_table fd: %s",
+                  netdev_get_name(netdev), ovs_libbpf_strerror(err));
+        close(flow_table_fd);
+        return EINVAL;
+    }
+    close(flow_table_fd);
+
+    subtbl_masks_hd = bpf_object__find_map_by_name(obj, "subtbl_masks_hd");
+    if (!subtbl_masks_hd) {
+        /* Head index can be a global variable. In that case libbpf will
+         * initialize it. */
+        VLOG_DBG("%s: \"subtbl_masks_hd\" map does not exist",
+                 netdev_get_name(netdev));
+    } else {
+        int head_fd, head = XDP_SUBTABLES_TAIL, zero = 0;
+
+        head_fd = bpf_create_map_name(BPF_MAP_TYPE_ARRAY, "subtbl_masks_hd",
+                                      sizeof(uint32_t), sizeof(int), 1, 0);
+        if (head_fd < 0) {
+            err = errno;
+            VLOG_ERR("%s: Map creation of \"subtbl_masks_hd\" failed: %s",
+                     netdev_get_name(netdev), ovs_strerror(errno));
+            return err;
+        }
+
+        if (bpf_map_update_elem(head_fd, &zero, &head, 0)) {
+            err = errno;
+            VLOG_ERR("Cannot update subtbl_masks_hd: %s",
+                     ovs_strerror(errno));
+            return err;
+        }
+
+        err = bpf_map__reuse_fd(subtbl_masks_hd, head_fd);
+        if (err) {
+            VLOG_ERR("%s: Failed to reuse subtbl_masks_hd fd: %s",
+                     netdev_get_name(netdev), ovs_libbpf_strerror(err));
+            close(head_fd);
+            return EINVAL;
+        }
+        close(head_fd);
+    }
+
+    xsks_map = bpf_object__find_map_by_name(obj, "xsks_map");
+    if (!xsks_map) {
+        VLOG_ERR("%s: BUG: \"xsks_map\" map does not exist",
+                 netdev_get_name(netdev));
+        return EOPNOTSUPP;
+    }
+
+    n_rxq = netdev_n_rxq(netdev);
+    xsks_map_fd = bpf_create_map_name(BPF_MAP_TYPE_XSKMAP, "xsks_map",
+                                      sizeof(int), sizeof(int), n_rxq, 0);
+    if (xsks_map_fd < 0) {
+        err = errno;
+        VLOG_WARN("%s: Map creation for xsks_map failed: %s",
+                  netdev_get_name(netdev), ovs_strerror(errno));
+        return err;
+    }
+
+    err = bpf_map__reuse_fd(xsks_map, xsks_map_fd);
+    if (err) {
+        VLOG_WARN("%s: Failed to reuse xsks_map fd: %s",
+                  netdev_get_name(netdev), ovs_libbpf_strerror(err));
+        close(xsks_map_fd);
+        return EINVAL;
+    }
+    close(xsks_map_fd);
+
+    err = bpf_map__reuse_fd(output_map, output_map_fd);
+    if (err) {
+        VLOG_WARN("%s: Failed to reuse output_map fd: %s",
+                  netdev_get_name(netdev), ovs_libbpf_strerror(err));
+        return EINVAL;
+    }
+
+    return 0;
+}
+#endif
+
 static int
 xsk_load_prog(struct netdev *netdev, const char *path,
               struct bpf_object **pobj, int *prog_fd)
 {
+    struct netdev_linux *dev OVS_UNUSED = netdev_linux_cast(netdev);
     struct bpf_object_open_attr attr = {
         .prog_type = BPF_PROG_TYPE_XDP,
         .file = path,
@@ -297,6 +495,14 @@ xsk_load_prog(struct netdev *netdev, const char *path,
                  netdev_get_name(netdev));
         goto err;
     }
+
+#ifdef HAVE_XDP_OFFLOAD
+    if (!xdp_preload(netdev, obj)) {
+        VLOG_INFO("%s: Detected flowtable support in XDP program",
+                  netdev_get_name(netdev));
+        dev->has_xdp_flowtable = true;
+    }
+#endif
 
     if (bpf_object__load(obj)) {
         VLOG_ERR("%s: Can't load XDP program at '%s'",
@@ -1297,7 +1503,17 @@ libbpf_print(enum libbpf_print_level level,
 
 int netdev_afxdp_init(void)
 {
-    libbpf_set_print(libbpf_print);
+    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&once)) {
+        libbpf_set_print(libbpf_print);
+#ifdef HAVE_XDP_OFFLOAD
+        if (netdev_register_flow_api_provider(&netdev_offload_xdp)) {
+            VLOG_WARN("Failed to register XDP flow api provider");
+        }
+#endif
+        ovsthread_once_done(&once);
+    }
     return 0;
 }
 
