@@ -185,6 +185,9 @@ netdev_assign_flow_api(struct netdev *netdev)
             if (!current_rfa ||
                 (!netdev_flow_api_driver &&
                  !strcmp(FLOW_API_DRIVER_DEFAULT, rfa->flow_api->type))) {
+                if (current_rfa && current_rfa->flow_api->uninit_flow_api) {
+                    current_rfa->flow_api->uninit_flow_api(netdev);
+                }
                 current_rfa = rfa;
             }
         } else {
@@ -326,6 +329,9 @@ netdev_uninit_flow_api(struct netdev *netdev)
 
     ovsrcu_set(&netdev->flow_api, NULL);
     rfa = netdev_lookup_flow_api(flow_api->type);
+    if (rfa->flow_api->uninit_flow_api) {
+        rfa->flow_api->uninit_flow_api(netdev);
+    }
     ovs_refcount_unref(&rfa->refcnt);
 }
 
