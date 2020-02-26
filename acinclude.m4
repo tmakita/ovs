@@ -301,6 +301,62 @@ AC_DEFUN([OVS_CHECK_LINUX_AF_XDP], [
   AM_CONDITIONAL([HAVE_AF_XDP], test "$AF_XDP_ENABLE" = true)
 ])
 
+dnl OVS_CHECK_LINUX_BPF
+dnl
+dnl Check both llvm and libbpf support
+AC_DEFUN([OVS_CHECK_LINUX_BPF], [
+  AC_ARG_ENABLE([bpf],
+                [AC_HELP_STRING([--enable-bpf],
+                                [Compile reference eBPF programs for XDP])],
+                [], [enable_bpf=no])
+  AC_MSG_CHECKING([whether BPF is enabled])
+  if test "$enable_bpf" != yes; then
+    AC_MSG_RESULT([no])
+    BPF_ENABLE=false
+  else
+    AC_MSG_RESULT([yes])
+    BPF_ENABLE=true
+
+    AC_CHECK_PROG(CLANG_CHECK, clang, yes)
+    AS_IF([test X"$CLANG_CHECK" != X"yes"],
+      [AC_MSG_ERROR([unable to find clang to compile BPF program])])
+
+    AC_CHECK_PROG(LLC_CHECK, llc, yes)
+    AS_IF([test X"$LLC_CHECK" != X"yes"],
+      [AC_MSG_ERROR([unable to find llc to compile BPF program])])
+
+    AC_CHECK_HEADER([bpf/bpf_helpers.h], [],
+      [AC_MSG_ERROR([unable to find bpf/bpf_helpers.h to compile BPF program])])
+
+    AC_CHECK_HEADER([linux/bpf.h], [],
+      [AC_MSG_ERROR([unable to find linux/bpf.h to compile BPF program])])
+
+    AC_MSG_CHECKING([for LLVM bpf target support])
+    if llc -march=bpf -mattr=help >/dev/null 2>&1; then
+      AC_MSG_RESULT([yes])
+    else
+      AC_MSG_RESULT([no])
+      AC_MSG_ERROR([LLVM does not support bpf target])
+    fi
+
+    AC_MSG_CHECKING([for BTF DATASEC support])
+    AC_LANG_CONFTEST(
+      [AC_LANG_SOURCE([__attribute__((section("_x"), used)) int x;])])
+    if clang -g -O2 -S -target bpf -emit-llvm -c conftest.c -o conftest.ll && \
+       llc -march=bpf -filetype=obj -o conftest.o conftest.ll && \
+       readelf -p.BTF conftest.o 2>/dev/null | grep -q -w _x; then
+      AC_MSG_RESULT([yes])
+    else
+      AC_MSG_RESULT([no])
+      AC_MSG_ERROR([LLVM does not support BTF DATASEC])
+    fi
+
+    AC_DEFINE([HAVE_BPF], [1],
+              [Define to 1 if BPF compilation is available and enabled.])
+  fi
+  AM_CONDITIONAL([HAVE_BPF], test "$BPF_ENABLE" = true)
+])
+
 dnl OVS_CHECK_DPDK
 dnl
 dnl Configure DPDK source tree
