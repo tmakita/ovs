@@ -78,10 +78,10 @@ jobs:
 
           - compiler:     gcc
             afxdp:        afxdp
-            kernel:       5.3
+            kernel:       5.5
           - compiler:     clang
             afxdp:        afxdp
-            kernel:       5.3
+            kernel:       5.5
 
           - compiler:     gcc
             dpdk:         dpdk

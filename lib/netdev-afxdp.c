@@ -21,6 +21,7 @@
 #include "netdev-afxdp.h"
 #include "netdev-afxdp-pool.h"
 
+#include <bpf/bpf.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <linux/rtnetlink.h>
@@ -32,6 +33,7 @@
 #include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -96,7 +98,8 @@ static struct xsk_socket_info *xsk_configure(int ifindex, int xdp_queue_id,
                                              enum afxdp_mode mode,
                                              bool use_need_wakeup,
                                              bool report_socket_failures);
-static void xsk_remove_xdp_program(uint32_t ifindex, enum afxdp_mode);
+static void xsk_remove_xdp_program(uint32_t ifindex, enum afxdp_mode,
+                                   struct bpf_object *obj);
 static void xsk_destroy(struct xsk_socket_info *xsk);
 static int xsk_configure_all(struct netdev *netdev);
 static void xsk_destroy_all(struct netdev *netdev);
@@ -256,6 +259,58 @@ netdev_afxdp_sweep_unused_pools(void *aux OVS_UNUSED)
         }
     }
     ovs_mutex_unlock(&unused_pools_mutex);
+}
+
+static int
+xsk_load_prog(struct netdev *netdev, const char *path,
+              struct bpf_object **pobj, int *prog_fd)
+{
+    struct bpf_object_open_attr attr = {
+        .prog_type = BPF_PROG_TYPE_XDP,
+        .file = path,
+    };
+    struct bpf_program *prog;
+    struct bpf_object *obj;
+
+    obj = bpf_object__open_xattr(&attr);
+    if (libbpf_get_error(obj)) {
+        VLOG_ERR("%s: Can't open XDP program at '%s'",
+                 netdev_get_name(netdev), path);
+        return EINVAL;
+    }
+
+    prog = bpf_program__next(NULL, obj);
+    if (!prog) {
+        VLOG_ERR("%s: '%s' does not contain bpf program",
+                 netdev_get_name(netdev), path);
+        goto err;
+    }
+
+    if (bpf_program__get_type(prog) != BPF_PROG_TYPE_XDP) {
+        VLOG_ERR("%s: First program in '%s' is not XDP type",
+                 netdev_get_name(netdev), path);
+        goto err;
+    }
+
+    if (!bpf_object__find_map_by_name(obj, "xsks_map")) {
+        VLOG_ERR("%s: Cannot find \"xsks_map\".",
+                 netdev_get_name(netdev));
+        goto err;
+    }
+
+    if (bpf_object__load(obj)) {
+        VLOG_ERR("%s: Can't load XDP program at '%s'",
+                 netdev_get_name(netdev), path);
+        goto err;
+    }
+
+    *pobj = obj;
+    *prog_fd = bpf_program__fd(prog);
+
+    return 0;
+err:
+    bpf_object__close(obj);
+    return EINVAL;
 }
 
 static struct xsk_umem_info *
@@ -474,6 +529,41 @@ xsk_configure_queue(struct netdev_linux *dev, int ifindex, int queue_id,
     return 0;
 }
 
+static int
+xsk_configure_prog(struct netdev *netdev, int ifindex)
+{
+    struct netdev_linux *dev = netdev_linux_cast(netdev);
+    struct bpf_object *obj;
+    uint32_t prog_id = 0;
+    uint32_t flags;
+    int prog_fd = 0;
+    int mode;
+    int ret;
+
+    mode = dev->xdp_mode_in_use;
+    flags = xdp_modes[mode].xdp_flags | XDP_FLAGS_UPDATE_IF_NOEXIST;
+
+    ret = xsk_load_prog(netdev, dev->xdp_obj_path, &obj, &prog_fd);
+    if (ret) {
+        goto err;
+    }
+    dev->xdp_obj = obj;
+
+    bpf_set_link_xdp_fd(ifindex, prog_fd, flags);
+    ret = bpf_get_link_xdp_id(ifindex, &prog_id, flags);
+    if (ret < 0) {
+        VLOG_ERR("%s: Cannot get XDP prog id.",
+                 netdev_get_name(netdev));
+        goto err;
+    }
+
+    VLOG_INFO("%s: Loaded custom XDP program at %s prog_id %d.",
+              netdev_get_name(netdev), dev->xdp_obj_path, prog_id);
+    return 0;
+
+err:
+    return ret;
+}
 
 static int
 xsk_configure_all(struct netdev *netdev)
@@ -510,6 +600,13 @@ xsk_configure_all(struct netdev *netdev)
         qid++;
     } else {
         dev->xdp_mode_in_use = dev->xdp_mode;
+        if (dev->xdp_obj_path) {
+            /* XDP program is per-netdev, so all queues share
+             * the same XDP program. */
+            if (xsk_configure_prog(netdev, ifindex)) {
+                goto err;
+            }
+        }
     }
 
     /* Configure remaining queues. */
@@ -584,7 +681,10 @@ xsk_destroy_all(struct netdev *netdev)
 
     VLOG_INFO("%s: Removing xdp program.", netdev_get_name(netdev));
     ifindex = linux_get_ifindex(netdev_get_name(netdev));
-    xsk_remove_xdp_program(ifindex, dev->xdp_mode_in_use);
+    xsk_remove_xdp_program(ifindex, dev->xdp_mode_in_use, dev->xdp_obj);
+    dev->xdp_obj = NULL;
+    free(CONST_CAST(char *, dev->xdp_obj_path));
+    dev->xdp_obj_path = NULL;
 
     if (dev->tx_locks) {
         for (i = 0; i < netdev_n_txq(netdev); i++) {
@@ -601,9 +701,11 @@ netdev_afxdp_set_config(struct netdev *netdev, const struct smap *args,
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
     const char *str_xdp_mode;
+    const char *str_xdp_obj;
     enum afxdp_mode xdp_mode;
     bool need_wakeup;
     int new_n_rxq;
+    struct stat s;
 
     ovs_mutex_lock(&dev->mutex);
     new_n_rxq = MAX(smap_get_int(args, "n_rxq", NR_QUEUE), 1);
@@ -637,12 +739,34 @@ netdev_afxdp_set_config(struct netdev *netdev, const struct smap *args,
     }
 #endif
 
+    str_xdp_obj = smap_get_def(args, "xdp-obj", NULL);
+    if (str_xdp_obj) {
+        if (stat(str_xdp_obj, &s)) {
+            ovs_mutex_unlock(&dev->mutex);
+            VLOG_ERR("Invalid xdp-obj '%s': %s.", str_xdp_obj,
+                     ovs_strerror(errno));
+            return EINVAL;
+        } else if (!S_ISREG(s.st_mode)) {
+            ovs_mutex_unlock(&dev->mutex);
+            VLOG_ERR("xdp-obj '%s' is not a regular file.", str_xdp_obj);
+            return EINVAL;
+        }
+    }
+
+    if (str_xdp_obj && xdp_mode == OVS_AF_XDP_MODE_BEST_EFFORT) {
+        ovs_mutex_unlock(&dev->mutex);
+        VLOG_ERR("best-effort mode and xdp-obj can't be set together");
+        return EINVAL;
+    }
+
     if (dev->requested_n_rxq != new_n_rxq
         || dev->requested_xdp_mode != xdp_mode
-        || dev->requested_need_wakeup != need_wakeup) {
+        || dev->requested_need_wakeup != need_wakeup
+        || !nullable_string_is_equal(dev->requested_xdp_obj, str_xdp_obj)) {
         dev->requested_n_rxq = new_n_rxq;
         dev->requested_xdp_mode = xdp_mode;
         dev->requested_need_wakeup = need_wakeup;
+        dev->requested_xdp_obj = nullable_xstrdup(str_xdp_obj);
         netdev_request_reconfigure(netdev);
     }
     ovs_mutex_unlock(&dev->mutex);
@@ -661,6 +785,8 @@ netdev_afxdp_get_config(const struct netdev *netdev, struct smap *args)
                     xdp_modes[dev->xdp_mode_in_use].name);
     smap_add_format(args, "use-need-wakeup", "%s",
                     dev->use_need_wakeup ? "true" : "false");
+    smap_add_format(args, "xdp-obj", "%s",
+                    dev->xdp_obj_path ? dev->xdp_obj_path : "builtin");
     ovs_mutex_unlock(&dev->mutex);
     return 0;
 }
@@ -696,7 +822,9 @@ netdev_afxdp_reconfigure(struct netdev *netdev)
     if (netdev->n_rxq == dev->requested_n_rxq
         && dev->xdp_mode == dev->requested_xdp_mode
         && dev->use_need_wakeup == dev->requested_need_wakeup
-        && dev->xsks) {
+        && dev->xsks
+        && nullable_string_is_equal(dev->xdp_obj_path,
+                                    dev->requested_xdp_obj)) {
         goto out;
     }
 
@@ -713,6 +841,8 @@ netdev_afxdp_reconfigure(struct netdev *netdev)
         VLOG_ERR("setrlimit(RLIMIT_MEMLOCK) failed: %s", ovs_strerror(errno));
     }
     dev->use_need_wakeup = dev->requested_need_wakeup;
+
+    dev->xdp_obj_path = dev->requested_xdp_obj;
 
     err = xsk_configure_all(netdev);
     if (err) {
@@ -736,7 +866,8 @@ out:
 }
 
 static void
-xsk_remove_xdp_program(uint32_t ifindex, enum afxdp_mode mode)
+xsk_remove_xdp_program(uint32_t ifindex, enum afxdp_mode mode,
+                       struct bpf_object *obj)
 {
     uint32_t flags = xdp_modes[mode].xdp_flags | XDP_FLAGS_UPDATE_IF_NOEXIST;
     uint32_t ret, prog_id = 0;
@@ -753,7 +884,15 @@ xsk_remove_xdp_program(uint32_t ifindex, enum afxdp_mode mode)
         return;
     }
 
-    bpf_set_link_xdp_fd(ifindex, -1, flags);
+    ret = bpf_set_link_xdp_fd(ifindex, -1, flags);
+    if (ret) {
+        VLOG_ERR("Failed to unload prog ID: %d", prog_id);
+    }
+
+    /* Note: bpf_object__close() can handle NULL obj */
+    bpf_object__close(obj);
+
+    VLOG_INFO("Removed XDP program ID: %d", prog_id);
 }
 
 void
@@ -765,7 +904,7 @@ signal_remove_xdp(struct netdev *netdev)
     ifindex = linux_get_ifindex(netdev_get_name(netdev));
 
     VLOG_WARN("Force removing xdp program.");
-    xsk_remove_xdp_program(ifindex, dev->xdp_mode_in_use);
+    xsk_remove_xdp_program(ifindex, dev->xdp_mode_in_use, dev->xdp_obj);
 }
 
 static struct dp_packet_afxdp *
@@ -1179,10 +1318,12 @@ netdev_afxdp_construct(struct netdev *netdev)
     netdev->n_txq = 0;
     dev->xdp_mode = OVS_AF_XDP_MODE_UNSPEC;
     dev->xdp_mode_in_use = OVS_AF_XDP_MODE_UNSPEC;
+    dev->xdp_obj_path = NULL;
 
     dev->requested_n_rxq = NR_QUEUE;
     dev->requested_xdp_mode = OVS_AF_XDP_MODE_BEST_EFFORT;
     dev->requested_need_wakeup = NEED_WAKEUP_DEFAULT;
+    dev->requested_xdp_obj = NULL;
 
     dev->xsks = NULL;
     dev->tx_locks = NULL;

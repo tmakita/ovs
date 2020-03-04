@@ -301,6 +301,65 @@ Or, use OVS pmd tool::
   ovs-appctl dpif-netdev/pmd-stats-show
 
 
+Loading Custom XDP Program
+--------------------------
+By defailt, netdev-afxdp always forwards all packets to userspace because
+it is using libbpf's default XDP program. There are some cases when users
+want to keep packets in kernel instead of sending to userspace, for example,
+management traffic such as SSH should be processed in kernel. This can be
+done by loading the user-provided XDP program::
+
+  ovs-vsctl -- set int afxdp-p0 options:xdp-obj=<path/to/xdp/obj>
+
+So users can implement their filtering logic or traffic steering idea
+in their XDP program, and rest of the traffic passes to AF_XDP socket
+handled by OVS. To set it back to default, use::
+
+  ovs-vsctl remove int afxdp-p0 options xdp-obj
+
+Below is a sample C program compiled under kernel's samples/bpf/.
+
+.. code-block:: c
+
+  #include <uapi/linux/bpf.h>
+  #include "bpf_helpers.h"
+
+  #if LINUX_VERSION_CODE < KERNEL_VERSION(5,3,0)
+  /* Kernel version before 5.3 needed an additional map */
+  struct bpf_map_def SEC("maps") qidconf_map = {
+      .type = BPF_MAP_TYPE_ARRAY,
+      .key_size = sizeof(int),
+      .value_size = sizeof(int),
+      .max_entries = 64,
+  };
+  #endif
+
+  /* OVS will associate map 'xsks_map' to xsk socket. */
+  struct bpf_map_def SEC("maps") xsks_map = {
+      .type = BPF_MAP_TYPE_XSKMAP,
+      .key_size = sizeof(int),
+      .value_size = sizeof(int),
+      .max_entries = 32,
+  };
+
+  SEC("xdp_sock")
+  int xdp_sock_prog(struct xdp_md *ctx)
+  {
+      int index = ctx->rx_queue_index;
+
+      /* Customized by user.
+       * For example
+       * 1) filter out all SSH traffic and return XDP_PASS
+       *    for kernel to process.
+       * 2) Drop unwanted packet by returning XDP_DROP.
+       */
+
+      /* Rest of packets goes to AF_XDP. */
+      return bpf_redirect_map(&xsks_map, index, 0);
+  }
+  char _license[] SEC("license") = "GPL";
+
+
 Example Script
 --------------
 

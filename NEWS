@@ -145,6 +145,8 @@ v2.13.0 - 14 Feb 2020
          generic               - former SKB
          best-effort [default] - new one, chooses the best available from
                                  3 above modes
+     * New option 'xdp-obj' for loading custom XDP program.  Default uses
+       the libbpf builtin XDP program.
    - DPDK:
      * DPDK pdump packet capture support disabled by default. New configure
        option '--enable-dpdk-pdump' to enable it.
