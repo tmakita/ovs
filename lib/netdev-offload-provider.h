@@ -93,6 +93,9 @@ bool netdev_flow_api_equals(const struct netdev *, const struct netdev *);
 
 #ifdef __linux__
 extern const struct netdev_flow_api netdev_offload_tc;
+#ifdef HAVE_AF_XDP
+extern const struct netdev_flow_api netdev_offload_xdp;
+#endif
 #endif
 
 #ifdef DPDK_NETDEV

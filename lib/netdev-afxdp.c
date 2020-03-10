@@ -42,6 +42,7 @@
 #include "dp-packet.h"
 #include "dpif-netdev.h"
 #include "fatal-signal.h"
+#include "netdev-offload-provider.h"
 #include "netdev-offload-xdp.h"
 #include "openvswitch/compiler.h"
 #include "openvswitch/dynamic-string.h"
@@ -1482,7 +1483,7 @@ libbpf_print(enum libbpf_print_level level,
 int netdev_afxdp_init(void)
 {
     libbpf_set_print(libbpf_print);
-    return 0;
+    return netdev_register_flow_api_provider(&netdev_offload_xdp);
 }
 
 int
