@@ -60,6 +60,9 @@ VLOG_DEFINE_THIS_MODULE(netdev_offload);
 
 static bool netdev_flow_api_enabled = false;
 
+#define FLOW_API_DRIVER_DEFAULT "linux_tc"
+static const char *netdev_flow_api_driver = NULL;
+
 /* Protects 'netdev_flow_apis'.  */
 static struct ovs_mutex netdev_flow_api_provider_mutex = OVS_MUTEX_INITIALIZER;
 
@@ -172,9 +175,38 @@ static int
 netdev_assign_flow_api(struct netdev *netdev)
 {
     struct netdev_registered_flow_api *rfa;
+    const char *flow_api_driver = netdev_flow_api_driver;
+
+    if (!flow_api_driver) {
+        flow_api_driver = FLOW_API_DRIVER_DEFAULT;
+    }
 
     CMAP_FOR_EACH (rfa, cmap_node, &netdev_flow_apis) {
+        if (strcmp(flow_api_driver, rfa->flow_api->type)) {
+            continue;
+        }
         if (!rfa->flow_api->init_flow_api(netdev)) {
+            goto found;
+        }
+        VLOG_DBG("%s: flow API '%s' is not suitable.",
+                 netdev_get_name(netdev), rfa->flow_api->type);
+        if (netdev_flow_api_driver) {
+            goto err;
+        }
+        break;
+    }
+    if (netdev_flow_api_driver) {
+        VLOG_DBG("%s: flow API '%s' is not found.",
+                 netdev_get_name(netdev), netdev_flow_api_driver);
+        goto err;
+    }
+
+    CMAP_FOR_EACH (rfa, cmap_node, &netdev_flow_apis) {
+        if (!strcmp(flow_api_driver, rfa->flow_api->type)) {
+            continue;
+        }
+        if (!rfa->flow_api->init_flow_api(netdev)) {
+found:
             ovs_refcount_ref(&rfa->refcnt);
             ovsrcu_set(&netdev->flow_api, rfa->flow_api);
             VLOG_INFO("%s: Assigned flow API '%s'.",
@@ -184,6 +216,7 @@ netdev_assign_flow_api(struct netdev *netdev)
         VLOG_DBG("%s: flow API '%s' is not suitable.",
                  netdev_get_name(netdev), rfa->flow_api->type);
     }
+err:
     VLOG_INFO("%s: No suitable flow API found.", netdev_get_name(netdev));
 
     return -1;
@@ -674,6 +707,8 @@ netdev_set_flow_api_enabled(const struct smap *ovs_other_config)
         static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
 
         if (ovsthread_once_start(&once)) {
+            const char *offload_driver;
+
             netdev_flow_api_enabled = true;
 
             VLOG_INFO("netdev: Flow API Enabled");
@@ -686,6 +721,10 @@ netdev_set_flow_api_enabled(const struct smap *ovs_other_config)
             if (smap_get_bool(ovs_other_config, "offload-rebalance", false)) {
                 netdev_offload_rebalance_policy = true;
             }
+
+            offload_driver = smap_get_def(ovs_other_config, "offload-driver",
+                                          NULL);
+            netdev_flow_api_driver = nullable_xstrdup(offload_driver);
 
             netdev_ports_flow_init();
 
