@@ -52,13 +52,6 @@ function install_kernel()
     sed -i 's/CONFIG_STACK_VALIDATION=y/CONFIG_STACK_VALIDATION=n/' .config
     make oldconfig
 
-    # Older kernels do not include openvswitch
-    if [ -d "net/openvswitch" ]; then
-        make net/openvswitch/
-    else
-        make net/bridge/
-    fi
-
     if [ "$AFXDP" ]; then
         sudo make headers_install INSTALL_HDR_PATH=/usr
         # The Linux kernel defines __always_inline in stddef.h (283d7573), and
@@ -67,6 +60,13 @@ function install_kernel()
         sudo sed -i '/^# define __always_inline .*/i # undef __always_inline' \
                     /usr/include/x86_64-linux-gnu/sys/cdefs.h || true
     else
+        # Older kernels do not include openvswitch
+        if [ -d "net/openvswitch" ]; then
+            make net/openvswitch/
+        else
+            make net/bridge/
+        fi
+
         EXTRA_OPTS="${EXTRA_OPTS} --with-linux=$(pwd)"
         echo "Installed kernel source in $(pwd)"
     fi
