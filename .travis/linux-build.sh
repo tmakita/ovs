@@ -61,23 +61,36 @@ function install_kernel()
 
     if [ "$AFXDP" ]; then
         sudo make headers_install INSTALL_HDR_PATH=/usr
-        pushd tools/lib/bpf/
-        # Bulding with gcc because there are some issues in make files
-        # that breaks building libbpf with clang on Travis.
-        CC=gcc sudo make install
-        CC=gcc sudo make install_headers
-        sudo ldconfig
-        popd
         # The Linux kernel defines __always_inline in stddef.h (283d7573), and
         # sys/cdefs.h tries to re-define it.  Older libc-dev package in xenial
         # doesn't have a fix for this issue.  Applying it manually.
         sudo sed -i '/^# define __always_inline .*/i # undef __always_inline' \
                     /usr/include/x86_64-linux-gnu/sys/cdefs.h || true
-        EXTRA_OPTS="${EXTRA_OPTS} --enable-afxdp"
     else
         EXTRA_OPTS="${EXTRA_OPTS} --with-linux=$(pwd)"
         echo "Installed kernel source in $(pwd)"
     fi
+    popd
+}
+
+function install_libbpf()
+{
+    rm -rf libbpf-dir
+    wget -O libbpf.tgz https://github.com/libbpf/libbpf/archive/v0.0.8.tar.gz
+    tar xvf libbpf.tgz > /dev/null
+    DIR_NAME=$(tar -tf libbpf.tgz | head -1 | cut -f1 -d"/")
+    mv ${DIR_NAME} libbpf-dir
+
+    pushd libbpf-dir/src
+    # Bulding with gcc because there are some issues in make files
+    # that breaks building libbpf with clang on Travis.
+    CC=gcc sudo make install
+    CC=gcc sudo make install_headers
+    CC=gcc sudo make install_uapi_headers
+    sudo ldconfig
+
+    EXTRA_OPTS="${EXTRA_OPTS} --enable-afxdp"
+    echo "Installed libbpf source in $(pwd)"
     popd
 }
 
@@ -166,6 +179,10 @@ function build_ovs()
 
 if [ "$KERNEL" ]; then
     install_kernel $KERNEL
+fi
+
+if [ "$AFXDP" ]; then
+    install_libbpf
 fi
 
 if [ "$DPDK" ] || [ "$DPDK_SHARED" ]; then
