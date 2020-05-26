@@ -396,7 +396,7 @@ convert_port_to_devmap_idx(struct nlattr *actions, size_t actions_len)
              * XDP program enabled. Linux netdev community is considering
              * adding feature detection in XDP */
 
-            *port = netdev_info->devmap_idx;
+            *port = u32_to_odp(netdev_info->devmap_idx);
             output_seen = true;
         }
     }
