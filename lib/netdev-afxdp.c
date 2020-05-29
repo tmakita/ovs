@@ -328,6 +328,7 @@ xdp_preload(struct netdev *netdev, struct bpf_object *obj)
             err = errno;
             VLOG_WARN("%s: Map creation for output_map failed: %s",
                       netdev_get_name(netdev), ovs_strerror(errno));
+            ovsthread_once_done(&output_map_once);
             return err;
         }
         ovsthread_once_done(&output_map_once);
