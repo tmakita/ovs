@@ -686,16 +686,17 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
                 free(tmp_values);
                 goto err_close;
             }
-            free(tmp_values);
 
             entry->count++;
             if (bpf_map_update_elem(masks_fd, &idx, entry, 0)) {
                 err = errno;
                 VLOG_ERR_RL(&rl, "Cannot update subtbl_masks count: %s",
                             ovs_strerror(errno));
-                bpf_map_delete_elem(subtbl_fd, minimatch.flow);
+                bpf_map_delete_elem(subtbl_fd, tmp_values);
+                free(tmp_values);
                 goto err_close;
             }
+            free(tmp_values);
 
             goto out;
         }
@@ -929,7 +930,7 @@ netdev_xdp_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
         goto out;
     }
 
-    bpf_map_delete_elem(subtbl_fd, &data->flow);
+    bpf_map_delete_elem(subtbl_fd, miniflow_get_values(&data->flow));
     close(subtbl_fd);
 
     if (--entry->count > 0) {
