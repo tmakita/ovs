@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-/* linux/types.h is necessary for bpf_helpers.h as it's not self-contained */
+/* linux/types.h is necessary for bpf_helpers.h as it's not self-contained so
+ * that we can alternatively choose vmlinux.h auto-generated from BTF. */
 #include <linux/types.h>
 #include <bpf/bpf_helpers.h>
 #include <linux/bpf.h>

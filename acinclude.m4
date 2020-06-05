@@ -326,7 +326,8 @@ AC_DEFUN([OVS_CHECK_LINUX_BPF], [
       [AC_MSG_ERROR([unable to find llc to compile BPF program])])
 
     AC_CHECK_HEADER([bpf/bpf_helpers.h], [],
-      [AC_MSG_ERROR([unable to find bpf/bpf_helpers.h to compile BPF program])])
+      [AC_MSG_ERROR([unable to find bpf/bpf_helpers.h to compile BPF program])],
+      [#include <linux/types.h>])
 
     AC_CHECK_HEADER([linux/bpf.h], [],
       [AC_MSG_ERROR([unable to find linux/bpf.h to compile BPF program])])
