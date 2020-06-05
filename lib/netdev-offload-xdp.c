@@ -297,14 +297,11 @@ is_supported_actions(struct netdev_info *netdev_info,
     const struct nlattr *a;
     unsigned int left;
 
-    if (sizeof(struct xdp_flow_actions_header) + actions_len >
-        netdev_info->max_actions_len)
-        return false;
-
     NL_ATTR_FOR_EACH_UNSAFE(a, left, actions, actions_len) {
         int type = nl_attr_type(a);
 
         if (!(netdev_info->supported_actions & (1 << type))) {
+            VLOG_DBG("Unsupported action: %d", type);
             return false;
         }
     }
@@ -549,6 +546,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
     struct bpf_object *obj = get_xdp_object(netdev);
     struct minimatch minimatch;
     struct match *match;
+    uint32_t key_size;
     size_t fidx;
     uint64_t *flow_u64, *mask_u64, *tmp_values;
     int masks_fd, head_fd, flow_table_fd, subtbl_fd, free_slot, head;
@@ -587,6 +585,20 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
     match->wc.masks.in_port.odp_port = 0;
     minimatch_init(&minimatch, match);
     free(match);
+
+    key_size = MINIFLOW_VALUES_SIZE(miniflow_n_values(minimatch.flow));
+    if (key_size > netdev_info->key_size) {
+        err = EOPNOTSUPP;
+        VLOG_DBG_RL(&rl, "Key size too big");
+        goto err;
+    }
+
+    if (sizeof(struct xdp_flow_actions_header) + actions_len >
+        netdev_info->max_actions_len) {
+        err = EOPNOTSUPP;
+        VLOG_DBG_RL(&rl, "Actions size too big");
+        goto err;
+    }
 
     /* XDP only uses masked keys so need to mask the key before adding an
      * entry otherwise table miss unexpectedly happens in XDP */
@@ -677,8 +689,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
             }
 
             tmp_values = xzalloc(netdev_info->key_size);
-            memcpy(tmp_values, miniflow_get_values(minimatch.flow),
-                   MINIFLOW_VALUES_SIZE(miniflow_n_values(minimatch.flow)));
+            memcpy(tmp_values, miniflow_get_values(minimatch.flow), key_size);
             if (bpf_map_update_elem(subtbl_fd, tmp_values, xdp_actions, 0)) {
                 err = errno;
                 VLOG_ERR_RL(&rl, "Cannot insert flow entry: %s",
@@ -752,8 +763,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
     }
 
     tmp_values = xzalloc(netdev_info->key_size);
-    memcpy(tmp_values, miniflow_get_values(minimatch.flow),
-           MINIFLOW_VALUES_SIZE(miniflow_n_values(minimatch.flow)));
+    memcpy(tmp_values, miniflow_get_values(minimatch.flow), key_size);
     if (bpf_map_update_elem(subtbl_fd, tmp_values, xdp_actions, 0)) {
         err = errno;
         VLOG_ERR_RL(&rl, "Cannot insert flow entry: %s", ovs_strerror(errno));
