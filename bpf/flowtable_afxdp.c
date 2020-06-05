@@ -66,6 +66,11 @@ BUILD_ASSERT_DECL(sizeof(struct xdp_flow) % sizeof(uint64_t) == 0);
  * mask map */
 struct xdp_flow_key {
     union {
+        /* Actually we can use smaller key than XDP_FLOW_U64S to minimize hash
+         * table search cost. It's possible because we rarely need all of
+         * combinations of flow keys. OVS XDP offload can properly handle
+         * smaller one. In that case we cannot use union so need to move
+         * _flow field to another map.*/
         uint64_t miniflow_buf[XDP_FLOW_U64S];
         struct xdp_flow _flow; /* Need this to keep xdp_flow in BTF */
     };
