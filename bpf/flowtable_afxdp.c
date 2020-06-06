@@ -228,22 +228,61 @@ action_output(int tx_port)
 }
 
 static inline int
-action_vlan_push(struct xdp_md *ctx OVS_UNUSED,
-                 const struct ovs_action_push_vlan *vlan OVS_UNUSED)
+action_vlan_push(struct xdp_md *ctx,
+                 const struct ovs_action_push_vlan *vlan)
 {
+    struct vlan_eth_header *veh;
+    void *data, *data_end;
+    ovs_be16 tpid, tci;
+
     account_action(XDP_ACTION_PUSH_VLAN);
 
-    /* TODO: implement this */
-    return XDP_ABORTED;
+    tpid = vlan->vlan_tpid;
+    tci = vlan->vlan_tci;
+
+    if (bpf_xdp_adjust_head(ctx, -VLAN_HEADER_LEN)) {
+        return XDP_DROP;
+    }
+
+    data_end = (void *)(long)ctx->data_end;
+    data = (void *)(long)ctx->data;
+    if (data + VLAN_ETH_HEADER_LEN > data_end) {
+        return XDP_DROP;
+    }
+
+    __builtin_memmove(data, data + VLAN_HEADER_LEN, 2 * ETH_ADDR_LEN);
+    veh = data;
+    veh->veth_type = tpid;
+    veh->veth_tci = tci & htons(~VLAN_CFI);
+
+    return _XDP_ACTION_CONTINUE;
 }
 
 static inline int
-action_vlan_pop(struct xdp_md *ctx OVS_UNUSED)
+action_vlan_pop(struct xdp_md *ctx)
 {
+    struct vlan_eth_header *veh;
+    void *data, *data_end;
+
     account_action(XDP_ACTION_POP_VLAN);
 
-    /* TODO: implement this */
-    return XDP_ABORTED;
+    data_end = (void *)(long)ctx->data_end;
+    data = (void *)(long)ctx->data;
+    if (data + VLAN_ETH_HEADER_LEN > data_end) {
+        return _XDP_ACTION_CONTINUE;
+    }
+
+    veh = data;
+    if (!eth_type_vlan(veh->veth_type)) {
+        return _XDP_ACTION_CONTINUE;
+    }
+
+    __builtin_memmove(data + VLAN_HEADER_LEN, data, 2 * ETH_ADDR_LEN);
+    if (bpf_xdp_adjust_head(ctx, VLAN_HEADER_LEN)) {
+        return XDP_DROP;
+    }
+
+    return _XDP_ACTION_CONTINUE;
 }
 
 /* TODO: Add more actions */
