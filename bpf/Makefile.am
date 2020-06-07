@@ -1,6 +1,7 @@
 AUTOMAKE_OPTIONS = foreign
 
-EXTRA_DIST = flowtable_afxdp.c bpf_miniflow.h bpf_netlink.h bpf_workaround.h
+EXTRA_DIST = flowtable_afxdp.c bpf_compiler.h bpf_miniflow.h bpf_netlink.h \
+	bpf_workaround.h
 
 # The following is based on commands for the Automake "distdir" target.
 distfiles: Makefile
@@ -54,6 +55,7 @@ CLEANFILES += *.ll
 	$(LLC) -march=bpf $(LLC_FLAGS) -filetype=obj -o $@ $<
 CLEANFILES += *.o
 
-flowtable_afxdp.o: flowtable_afxdp.c bpf_miniflow.h bpf_netlink.h bpf_workaround.h
+flowtable_afxdp.o: flowtable_afxdp.c bpf_compiler.h bpf_miniflow.h \
+	bpf_netlink.h bpf_workaround.h
 
 all-local: flowtable_afxdp.o

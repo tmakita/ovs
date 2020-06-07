@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include "bpf_workaround.h"
 
+#include "bpf_compiler.h"
 #include "bpf_miniflow.h"
 #include "bpf_netlink.h"
 #include "netdev-offload-xdp.h"
@@ -61,6 +62,7 @@ BUILD_ASSERT_DECL(sizeof(struct xdp_flow) % sizeof(uint64_t) == 0);
 
 #define XDP_MAX_SUBTABLE_FLOWS 1024
 #define XDP_MAX_ACTIONS_LEN 256
+#define XDP_MAX_ACTIONS 32
 
 /* Actual key in each subtable. miniflow map is omitted as it's identical to
  * mask map */
@@ -476,9 +478,10 @@ flowtable_afxdp(struct xdp_md *ctx)
     struct xdp_subtable_mask *subtable_mask;
     int *head;
     struct xdp_flow_actions *xdp_actions = NULL;
-    struct nlattr *a;
-    unsigned int left;
-    int cnt, idx, zero = 0;
+    int cnt, i, idx, zero = 0;
+    struct nlattr *attrs;
+    size_t actions_len, offset;
+    void *start, *end;
 
     account_debug(0);
 
@@ -530,17 +533,42 @@ upcall:
     }
 
     /* Execute actions */
-    NL_ATTR_FOR_EACH_UNSAFE(a, left, xdp_flow_actions(&xdp_actions->header),
-                            xdp_actions->header.actions_len) {
-        uint16_t type = bpf_nl_attr_type(a);
+    actions_len = xdp_actions->header.actions_len;
+    if (actions_len > XDP_MAX_ACTIONS_LEN -
+                      sizeof(struct xdp_flow_actions_header)) {
+        return XDP_ABORTED;
+    }
+    attrs = xdp_flow_actions(&xdp_actions->header);
+    start = xdp_actions;
+    end = (void *)attrs + actions_len;
+    BPF_MAP_NL_ATTR_FOR_EACH(offset, attrs, start, end, i, XDP_MAX_ACTIONS,
+                             XDP_MAX_ACTIONS_LEN) {
+        uint16_t type;
         int act;
+        struct nlattr *nla;
+
+        if (offset > XDP_MAX_ACTIONS_LEN - sizeof(struct nlattr)) {
+            return XDP_ABORTED;
+        }
+        type = bpf_nl_attr_type((struct nlattr *)(start + offset));
 
         switch ((enum action_attrs)type) {
         case XDP_ACTION_OUTPUT:
-            /* Note: userspace ensures there is no multiple output in actions */
-            return action_output(*(int *)bpf_nl_attr_get(a));
+            bpf_compiler_reg_barrier(offset);
+            if (offset > XDP_MAX_ACTIONS_LEN - sizeof(struct nlattr) -
+                         sizeof(int)) {
+                return XDP_ABORTED;
+            }
+            nla = start + offset;
+            return action_output(*(int *)bpf_nl_attr_get(nla));
         case XDP_ACTION_PUSH_VLAN:
-            act = action_vlan_push(ctx, bpf_nl_attr_get(a));
+            bpf_compiler_reg_barrier(offset);
+            if (offset > XDP_MAX_ACTIONS_LEN - sizeof(struct nlattr) -
+                         sizeof(struct ovs_action_push_vlan)) {
+                return XDP_ABORTED;
+            }
+            nla = start + offset;
+            act = action_vlan_push(ctx, bpf_nl_attr_get(nla));
             break;
         case XDP_ACTION_POP_VLAN:
             act = action_vlan_pop(ctx);
