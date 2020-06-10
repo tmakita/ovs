@@ -467,19 +467,19 @@ xsk_load_prog(struct netdev *netdev, const char *path, struct bpf_object **pobj,
     if (!prog) {
         VLOG_ERR("%s: '%s' does not contain bpf program",
                  netdev_get_name(netdev), path);
-        return EINVAL;
+        goto err;
     }
 
     if (bpf_program__get_type(prog) != BPF_PROG_TYPE_XDP) {
         VLOG_ERR("%s: First program in '%s' is not XDP type",
                  netdev_get_name(netdev), path);
-        return EINVAL;
+        goto err;
     }
 
     if (!bpf_object__find_map_by_name(obj, "xsks_map")) {
         VLOG_ERR("%s: Cannot find \"xsks_map\".",
                  netdev_get_name(netdev));
-        return EINVAL;
+        goto err;
     }
 
     if (!xdp_preload(netdev, obj)) {
@@ -491,13 +491,16 @@ xsk_load_prog(struct netdev *netdev, const char *path, struct bpf_object **pobj,
     if (bpf_object__load(obj)) {
         VLOG_ERR("%s: Can't load XDP program at '%s'",
                  netdev_get_name(netdev), path);
-        return EINVAL;
+        goto err;
     }
 
     *pobj = obj;
     *prog_fd = bpf_program__fd(prog);
 
     return 0;
+err:
+    bpf_object__close(obj);
+    return EINVAL;
 }
 
 static struct xsk_umem_info *
