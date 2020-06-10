@@ -476,6 +476,12 @@ xsk_load_prog(struct netdev *netdev, const char *path, struct bpf_object **pobj,
         return EINVAL;
     }
 
+    if (!bpf_object__find_map_by_name(obj, "xsks_map")) {
+        VLOG_ERR("%s: Cannot find \"xsks_map\".",
+                 netdev_get_name(netdev));
+        return EINVAL;
+    }
+
     if (!xdp_preload(netdev, obj)) {
         VLOG_INFO("%s: Detected flowtable support in XDP program",
                   netdev_get_name(netdev));
@@ -734,12 +740,6 @@ xsk_configure_prog(struct netdev *netdev, int ifindex)
     ret = bpf_get_link_xdp_id(ifindex, &prog_id, flags);
     if (ret < 0) {
         VLOG_ERR("%s: Cannot get XDP prog id.",
-                 netdev_get_name(netdev));
-        goto err;
-    }
-
-    if (!bpf_object__find_map_by_name(obj, "xsks_map")) {
-        VLOG_ERR("%s: Cannot find \"xsks_map\".",
                  netdev_get_name(netdev));
         goto err;
     }
