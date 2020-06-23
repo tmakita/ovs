@@ -64,6 +64,7 @@ struct netdev_info {
     uint32_t max_subtables;
     uint32_t subtable_mask_size;
     uint32_t key_size;
+    uint32_t max_actions;
     uint32_t max_actions_len;
     uint32_t max_entries;
     int free_slot_top;
@@ -143,25 +144,32 @@ delete_subtbl_masks_free_slot(struct netdev_info *netdev_info, int slot)
     memset(&(MASK).FIELD, 0xff, sizeof (MASK).FIELD)
 
 static int
-probe_supported_keys(struct netdev_info *netdev_info, struct btf *btf)
+probe_supported_keys(struct netdev_info *netdev_info, struct btf *btf,
+                     uint32_t type)
 {
     struct miniflow *mf = &netdev_info->supported_keys;
     struct flowmap *map = &mf->map;
     struct flow mask;
     struct btf_member *m;
-    const struct btf_type *t;
-    int32_t flow_key_id;
+    const struct btf_type *pt, *t;
     int i;
 
-    flow_key_id = btf__find_by_name(btf, "xdp_flow");
-    if (flow_key_id < 0) {
-        VLOG_ERR("\"xdp_flow\" struct is not found in BTF");
+    pt = btf__type_by_id(btf, type);
+    if (!pt) {
+        VLOG_ERR("\"supported_keys\" field type is unknown");
         return EINVAL;
     }
-
-    t = btf__type_by_id(btf, flow_key_id);
+    if (!btf_is_ptr(pt)) {
+        VLOG_ERR("\"supported_keys\" field is not ptr");
+        return EINVAL;
+    }
+    t = btf__type_by_id(btf, pt->type);
+    if (!t) {
+        VLOG_ERR("\"supported_keys\" ptr type is unknown");
+        return EINVAL;
+    }
     if (!btf_is_struct(t)) {
-        VLOG_ERR("\"xdp_flow\" is not struct");
+        VLOG_ERR("\"supported_keys\" field is not struct ptr");
         return EINVAL;
     }
 
@@ -170,6 +178,10 @@ probe_supported_keys(struct netdev_info *netdev_info, struct btf *btf)
     for (i = 0, m = btf_members(t); i < btf_vlen(t); i++, m++) {
         const char *name = btf__name_by_offset(btf, m->name_off);
 
+        if (!name) {
+            VLOG_ERR("Unnamed field #%d in \"supported_keys\" struct", i);
+            return EINVAL;
+        }
         if (!strcmp(name, "dl_dst")) {
             FLOWMAP_SET(map, dl_dst);
             FLOW_MASK_FIELD(mask, dl_dst);
@@ -185,6 +197,10 @@ probe_supported_keys(struct netdev_info *netdev_info, struct btf *btf)
 
             FLOWMAP_SET(map, vlans);
             vt = btf__type_by_id(btf, m->type);
+            if (!vt) {
+                VLOG_ERR("\"vlans\" field type is unknown");
+                return EINVAL;
+            }
             if (!btf_is_array(vt)) {
                 VLOG_ERR("\"vlans\" field is not array");
                 return EINVAL;
@@ -250,22 +266,29 @@ is_supported_keys(struct netdev_info *netdev_info, const struct minimask *mask)
 }
 
 static int
-probe_supported_actions(struct netdev_info *netdev_info, struct btf *btf)
+probe_supported_actions(struct netdev_info *netdev_info, struct btf *btf,
+                        uint32_t type)
 {
-    const struct btf_type *t;
+    const struct btf_type *pt, *t;
     const struct btf_enum *v;
-    int32_t supported_actions_id;
     int i;
 
-    supported_actions_id = btf__find_by_name(btf, "action_attrs");
-    if (supported_actions_id < 0) {
-        VLOG_ERR("\"action_attrs\" enum not found in BTF");
+    pt = btf__type_by_id(btf, type);
+    if (!pt) {
+        VLOG_ERR("\"supported_actions\" field type is unknown");
         return EINVAL;
     }
-
-    t = btf__type_by_id(btf, supported_actions_id);
+    if (!btf_is_ptr(pt)) {
+        VLOG_ERR("\"supported_actions\" field is not ptr");
+        return EINVAL;
+    }
+    t = btf__type_by_id(btf, pt->type);
+    if (!t) {
+        VLOG_ERR("\"supported_actions\" ptr type is unknown");
+        return EINVAL;
+    }
     if (!btf_is_enum(t)) {
-        VLOG_ERR("\"action_attrs\" is not enum");
+        VLOG_ERR("\"supported_actions\" field is not enum ptr");
         return EINVAL;
     }
 
@@ -274,6 +297,10 @@ probe_supported_actions(struct netdev_info *netdev_info, struct btf *btf)
     for (i = 0; i < btf_vlen(t); i++) {
         const char *name = btf__name_by_offset(btf, v[i].name_off);
 
+        if (!name) {
+            VLOG_ERR("Unnamed field #%d in \"supported_actions\" enum", i);
+            return EINVAL;
+        }
         switch (v[i].val) {
         case OVS_ACTION_ATTR_OUTPUT:
         case OVS_ACTION_ATTR_PUSH_VLAN:
@@ -282,7 +309,7 @@ probe_supported_actions(struct netdev_info *netdev_info, struct btf *btf)
             break;
         default:
             VLOG_ERR("Action \"%s\" (%d) is not supported",
-                        name, v[i].val);
+                     name, v[i].val);
             return EOPNOTSUPP;
         }
     }
@@ -296,6 +323,7 @@ is_supported_actions(struct netdev_info *netdev_info,
 {
     const struct nlattr *a;
     unsigned int left;
+    int actions_num = 0;
 
     NL_ATTR_FOR_EACH_UNSAFE(a, left, actions, actions_len) {
         int type = nl_attr_type(a);
@@ -304,8 +332,146 @@ is_supported_actions(struct netdev_info *netdev_info,
             VLOG_DBG("Unsupported action: %d", type);
             return false;
         }
+        actions_num++;
+    }
+
+    if (actions_num > netdev_info->max_actions) {
+        VLOG_DBG("Too many actions: %d", actions_num);
+        return false;
     }
     return true;
+}
+
+static int
+probe_max_actions(struct netdev_info *netdev_info, struct btf *btf,
+                  uint32_t type)
+{
+    const struct btf_type *pt, *at;
+    const struct btf_array *arr;
+
+    pt = btf__type_by_id(btf, type);
+    if (!pt) {
+        VLOG_ERR("\"max_actions\" field type is unknown");
+        return EINVAL;
+    }
+    if (!btf_is_ptr(pt)) {
+        VLOG_ERR("\"max_actions\" field is not ptr");
+        return EINVAL;
+    }
+    at = btf__type_by_id(btf, pt->type);
+    if (!at) {
+        VLOG_ERR("\"max_actions\" ptr type is unknown");
+        return EINVAL;
+    }
+    if (!btf_is_array(at)) {
+        VLOG_ERR("\"max_actions\" field is not array ptr");
+        return EINVAL;
+    }
+    arr = btf_array(at);
+    netdev_info->max_actions = arr->nelems;
+
+    return 0;
+}
+
+static int
+probe_meta_info(struct netdev_info *netdev_info, struct btf *btf)
+{
+    int32_t meta_sec_id;
+    struct btf_var_secinfo *vi;
+    struct btf_member *m;
+    const struct btf_type *sec, *t = NULL;
+    bool supported_keys_found = false;
+    int i;
+
+    meta_sec_id = btf__find_by_name_kind(btf, ".ovs_meta", BTF_KIND_DATASEC);
+    if (meta_sec_id < 0) {
+        VLOG_ERR("BUG: \".ovs_meta\" datasec not found in BTF");
+        return EINVAL;
+    }
+
+    sec = btf__type_by_id(btf, meta_sec_id);
+    for (i = 0, vi = btf_var_secinfos(sec); i < btf_vlen(sec); i++, vi++) {
+        const struct btf_type *var = btf__type_by_id(btf, vi->type);
+        const char *name;
+
+        if (!var) {
+            VLOG_ERR("\".ovs_meta\" var #%d type is unknown", i);
+            return EINVAL;
+        }
+        name = btf__name_by_offset(btf, var->name_off);
+        if (!name) {
+            VLOG_ERR("\".ovs_meta\" var #%d name is empty", i);
+            return EINVAL;
+        }
+        if (strcmp(name, "meta_info")) {
+            continue;
+        }
+        if (!btf_is_var(var)) {
+            VLOG_ERR("\"meta_info\" is not var");
+            return EINVAL;
+        }
+        t = btf__type_by_id(btf, var->type);
+        if (!t) {
+            VLOG_ERR("\"meta_info\" var type is unknown");
+            return EINVAL;
+        }
+        break;
+    }
+
+    if (!t) {
+        VLOG_ERR("\"meta_info\" var not found in \".ovs_meta\" datasec");
+        return EINVAL;
+    }
+
+    if (!btf_is_struct(t)) {
+        VLOG_ERR("\"meta_info\" is not struct");
+        return EINVAL;
+    }
+
+    for (i = 0, m = btf_members(t); i < btf_vlen(t); i++, m++) {
+        const char *name = btf__name_by_offset(btf, m->name_off);
+        int err;
+
+        if (!name) {
+            VLOG_ERR("Invalid field #%d in \"meta_info\" struct", i);
+            return EINVAL;
+        }
+        if (!strcmp(name, "supported_keys")) {
+            err = probe_supported_keys(netdev_info, btf, m->type);
+            if (err) {
+                return err;
+            }
+            supported_keys_found = true;
+        } else if (!strcmp(name, "supported_actions")) {
+            err = probe_supported_actions(netdev_info, btf, m->type);
+            if (err) {
+                return err;
+            }
+        } else if (!strcmp(name, "max_actions")) {
+            err = probe_max_actions(netdev_info, btf, m->type);
+            if (err) {
+                return err;
+            }
+        } else {
+            VLOG_ERR("Unsupported meta_info key %s", name);
+            return EOPNOTSUPP;
+        }
+    }
+
+    if (!supported_keys_found) {
+        VLOG_ERR("\"supported_keys\" field not found in \"meta_info\"");
+        return EINVAL;
+    }
+    if (!netdev_info->supported_actions) {
+        VLOG_ERR("\"supported_actions\" field not found in \"meta_info\"");
+        return EINVAL;
+    }
+    if (!netdev_info->max_actions) {
+        VLOG_ERR("\"max_actions\" field not found in \"meta_info\"");
+        return EINVAL;
+    }
+
+    return 0;
 }
 
 
@@ -1021,13 +1187,6 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
     }
 
     obj = get_xdp_object(netdev);
-    btf = bpf_object__btf(obj);
-    if (!btf) {
-        VLOG_ERR("BPF object for netdev \"%s\" does not contain BTF",
-                 netdev_get_name(netdev));
-        return EINVAL;
-    }
-
     err = get_new_devmap_idx(&devmap_idx);
     if (err) {
         VLOG_ERR("Failed to get new devmap idx: %s", ovs_strerror(err));
@@ -1043,22 +1202,24 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
         goto err;
     }
 
-    err = probe_supported_keys(netdev_info, btf);
-    if (err) {
-        VLOG_ERR("Failed to initialize supported_keys for %s",
+    btf = bpf_object__btf(obj);
+    if (!btf) {
+        VLOG_ERR("BUG: BPF object for netdev \"%s\" does not contain BTF",
                  netdev_get_name(netdev));
+        err = EINVAL;
         goto err;
     }
-    err = probe_supported_actions(netdev_info, btf);
+
+    err = probe_meta_info(netdev_info, btf);
     if (err) {
-        VLOG_ERR("Failed to initialize supported_actions for %s",
+        VLOG_ERR("Failed to initialize xdp offload metadata for %s",
                  netdev_get_name(netdev));
         goto err;
     }
 
     flow_table = bpf_object__find_map_by_name(obj, "flow_table");
     if (!flow_table) {
-        VLOG_ERR("BPF map \"flow_table\" not found");
+        VLOG_ERR("BUG: BPF map \"flow_table\" not found");
         err = ENOENT;
         goto err;
     }
@@ -1072,7 +1233,7 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
 
     subtbl_template = bpf_object__find_map_by_name(obj, "subtbl_template");
     if (!subtbl_template) {
-        VLOG_ERR("BPF map \"subtbl_template\" not found");
+        VLOG_ERR("BUG: BPF map \"subtbl_template\" not found");
         err = ENOENT;
         goto err;
     }

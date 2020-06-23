@@ -67,15 +67,13 @@ BUILD_ASSERT_DECL(sizeof(struct xdp_flow) % sizeof(uint64_t) == 0);
 /* Actual key in each subtable. miniflow map is omitted as it's identical to
  * mask map */
 struct xdp_flow_key {
-    union {
-        /* Actually we can use smaller key than XDP_FLOW_U64S to minimize hash
-         * table search cost. It's possible because we rarely need all of
-         * combinations of flow keys. OVS XDP offload can properly handle
-         * smaller one. In that case we cannot use union so need to move
-         * _flow field to another map.*/
-        uint64_t miniflow_buf[XDP_FLOW_U64S];
-        struct xdp_flow _flow; /* Need this to keep xdp_flow in BTF */
-    };
+    /* Actually we can use smaller key than XDP_FLOW_U64S to minimize hash
+     * table search cost. It's possible because we rarely need all of
+     * combinations of flow keys. OVS XDP offload can properly handle
+     * smaller one. */
+    uint64_t miniflow_buf[XDP_FLOW_U64S];
+    /* Dummy. keep xdp_flow details in BTF */
+    struct xdp_flow _flow[];
 };
 
 /* Value for subtable mask array */
@@ -87,7 +85,7 @@ struct xdp_subtable_mask {
 /* miniflow for packet */
 struct xdp_miniflow {
     struct miniflow mf;
-    struct xdp_flow_key value;
+    uint64_t miniflow_buf[XDP_FLOW_U64S];
 };
 
 /* Used when the action only modifies the packet */
@@ -103,18 +101,17 @@ enum action_attrs : uint32_t {
     XDP_ACTION_POP_VLAN = OVS_ACTION_ATTR_POP_VLAN,
 };
 
-/* Identical to struct nlattr. Need this to keep enum action_attrs in BTF */
-struct xdp_action_nlattr {
-    uint16_t nla_len;
-    enum action_attrs action_type;
-};
-
 struct xdp_flow_actions {
     struct xdp_flow_actions_header header;
     uint8_t data[XDP_MAX_ACTIONS_LEN - sizeof(struct xdp_flow_actions_header)];
-    /* Dummy. Need xdp_action_nlattr to keep enum action_attrs in BTF */
-    struct xdp_action_nlattr _xdp_actions[];
 };
+
+/* A struct to inform vswitchd of metadata like supported keys/actions */
+struct xdp_meta_info {
+    __type(supported_keys, struct xdp_flow);
+    __type(supported_actions, enum action_attrs);
+    __uint(max_actions, XDP_MAX_ACTIONS);
+} meta_info SEC(".ovs_meta");
 
 
 /* Map definitions */
@@ -344,7 +341,7 @@ xdp_miniflow_extract(struct xdp_md *ctx, struct xdp_miniflow *pkt_mf)
     ovs_be16 dl_type;
     uint64_t nh_off;
     struct nw_params nw_params;
-    struct bpf_mf_ctx mf_ctx = { {{ 0 }}, (uint64_t *)&pkt_mf->value };
+    struct bpf_mf_ctx mf_ctx = { {{ 0 }}, (uint64_t *)&pkt_mf->miniflow_buf };
 
     nh_off = sizeof *eth;
     if (data + nh_off > data_end) {

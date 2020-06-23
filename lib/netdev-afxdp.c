@@ -22,6 +22,7 @@
 #include "netdev-afxdp-pool.h"
 
 #include <bpf/bpf.h>
+#include <bpf/btf.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <linux/rtnetlink.h>
@@ -284,12 +285,24 @@ static int
 xdp_preload(struct netdev *netdev, struct bpf_object *obj)
 {
     static struct ovsthread_once output_map_once = OVSTHREAD_ONCE_INITIALIZER;
+    struct btf *btf;
     struct bpf_map *flow_table, *subtbl_template, *subtbl_masks_hd, *xsks_map,
                    *output_map;
     const struct bpf_map_def *flow_table_def, *subtbl_def;
     int flow_table_fd, subtbl_meta_fd, xsks_map_fd;
     static int output_map_fd = -1;
     int n_rxq, err;
+
+    btf = bpf_object__btf(obj);
+    if (!btf) {
+        VLOG_DBG("BPF object for netdev \"%s\" does not contain BTF",
+                 netdev_get_name(netdev));
+        return EOPNOTSUPP;
+    }
+    if (btf__find_by_name_kind(btf, ".ovs_meta", BTF_KIND_DATASEC) < 0) {
+        VLOG_DBG("\".ovs_meta\" datasec not found in BTF");
+        return EOPNOTSUPP;
+    }
 
     flow_table = bpf_object__find_map_by_name(obj, "flow_table");
     if (!flow_table) {
@@ -301,13 +314,6 @@ xdp_preload(struct netdev *netdev, struct bpf_object *obj)
     subtbl_template = bpf_object__find_map_by_name(obj, "subtbl_template");
     if (!subtbl_template) {
         VLOG_DBG("%s: \"subtbl_template\" map does not exist",
-                 netdev_get_name(netdev));
-        return EOPNOTSUPP;
-    }
-
-    xsks_map = bpf_object__find_map_by_name(obj, "xsks_map");
-    if (!xsks_map) {
-        VLOG_DBG("%s: \"xsks_map\" map does not exist",
                  netdev_get_name(netdev));
         return EOPNOTSUPP;
     }
@@ -413,6 +419,13 @@ xdp_preload(struct netdev *netdev, struct bpf_object *obj)
             return EINVAL;
         }
         close(head_fd);
+    }
+
+    xsks_map = bpf_object__find_map_by_name(obj, "xsks_map");
+    if (!xsks_map) {
+        VLOG_ERR("%s: BUG: \"xsks_map\" map does not exist",
+                 netdev_get_name(netdev));
+        return EOPNOTSUPP;
     }
 
     n_rxq = netdev_n_rxq(netdev);
