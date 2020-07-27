@@ -458,8 +458,8 @@ xdp_preload(struct netdev *netdev, struct bpf_object *obj)
 }
 
 static int
-xsk_load_prog(struct netdev *netdev, const char *path, struct bpf_object **pobj,
-              int *prog_fd)
+xsk_load_prog(struct netdev *netdev, const char *path,
+              struct bpf_object **pobj, int *prog_fd)
 {
     struct netdev_linux *dev = netdev_linux_cast(netdev);
     struct bpf_object_open_attr attr = {
@@ -1026,7 +1026,8 @@ netdev_afxdp_reconfigure(struct netdev *netdev)
         && dev->xdp_mode == dev->requested_xdp_mode
         && dev->use_need_wakeup == dev->requested_need_wakeup
         && dev->xsks
-        && nullable_string_is_equal(dev->xdp_obj_path, dev->requested_xdp_obj)) {
+        && nullable_string_is_equal(dev->xdp_obj_path,
+                                    dev->requested_xdp_obj)) {
         goto out;
     }
 
