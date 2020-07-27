@@ -253,7 +253,7 @@ is_supported_keys(struct netdev_info *netdev_info, const struct minimask *mask)
     const uint64_t *p = miniflow_get_values(mf);
     size_t idx;
 
-    FLOWMAP_FOR_EACH_INDEX(idx, mf->map) {
+    FLOWMAP_FOR_EACH_INDEX (idx, mf->map) {
         uint64_t supported = miniflow_get(&netdev_info->supported_keys, idx);
         if (~supported & *p) {
             VLOG_DBG("Unsupported key: Index=%lu, Supported=%lx, Mask=%lx",
@@ -325,7 +325,7 @@ is_supported_actions(struct netdev_info *netdev_info,
     unsigned int left;
     int actions_num = 0;
 
-    NL_ATTR_FOR_EACH_UNSAFE(a, left, actions, actions_len) {
+    NL_ATTR_FOR_EACH_UNSAFE (a, left, actions, actions_len) {
         int type = nl_attr_type(a);
 
         if (!(netdev_info->supported_actions & (1 << type))) {
@@ -481,8 +481,8 @@ find_netdev_info(odp_port_t port)
     size_t port_hash = hash_bytes(&port, sizeof port, 0);
     struct netdev_info *netdev_info;
 
-    HMAP_FOR_EACH_WITH_HASH(netdev_info, port_node, port_hash,
-                            &netdev_info_table) {
+    HMAP_FOR_EACH_WITH_HASH (netdev_info, port_node, port_hash,
+                             &netdev_info_table) {
         if (port == netdev_info->port) {
             return netdev_info;
         }
@@ -535,7 +535,7 @@ convert_port_to_devmap_idx(struct nlattr *actions, size_t actions_len)
     unsigned int left;
     bool output_seen = false;
 
-    NL_ATTR_FOR_EACH_UNSAFE(a, left, actions, actions_len) {
+    NL_ATTR_FOR_EACH_UNSAFE (a, left, actions, actions_len) {
         int type = nl_attr_type(a);
 
         if (output_seen) {
@@ -555,7 +555,7 @@ convert_port_to_devmap_idx(struct nlattr *actions, size_t actions_len)
                          *port);
                 return EOPNOTSUPP;
             }
-            /* XXX: Some NICs cannot handle XDP_REDIRECT'ed packets even with
+            /* NOTE: Some NICs cannot handle XDP_REDIRECT'ed packets even with
              * XDP program enabled. Linux netdev community is considering
              * adding feature detection in XDP */
 
@@ -573,7 +573,7 @@ find_devmap_idx(int devmap_idx)
     struct devmap_idx_data *data;
     size_t hash = hash_bytes(&devmap_idx, sizeof devmap_idx, 0);
 
-    HMAP_FOR_EACH_WITH_HASH(data, node, hash, &devmap_idx_table) {
+    HMAP_FOR_EACH_WITH_HASH (data, node, hash, &devmap_idx_table) {
         if (devmap_idx == data->devmap_idx) {
             return data;
         }
@@ -770,7 +770,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
      * entry otherwise table miss unexpectedly happens in XDP */
     mask_u64 = miniflow_values(&minimatch.mask->masks);
     flow_u64 = miniflow_values(minimatch.flow);
-    FLOWMAP_FOR_EACH_INDEX(fidx, minimatch.mask->masks.map) {
+    FLOWMAP_FOR_EACH_INDEX (fidx, minimatch.mask->masks.map) {
         *flow_u64++ &= *mask_u64++;
     }
 
@@ -1043,7 +1043,7 @@ netdev_xdp_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
 
     hash = hash_bytes(ufid, sizeof *ufid, 0);
     ovs_mutex_lock(&ufid_lock);
-    HMAP_FOR_EACH_WITH_HASH(data, ufid_node, hash, &ufid_to_xdp) {
+    HMAP_FOR_EACH_WITH_HASH (data, ufid_node, hash, &ufid_to_xdp) {
         if (ovs_u128_equals(*ufid, data->ufid)) {
             break;
         }
@@ -1119,7 +1119,7 @@ netdev_xdp_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
         goto out;
     }
 
-    if (entry->count == (uint16_t)-1) {
+    if (entry->count == UINT16_MAX) {
         VLOG_WARN_RL(&rl, "subtbl_masks has negative count: %d",
                      entry->count);
     }
@@ -1250,7 +1250,8 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
     }
     subtbl_masks_def = bpf_map__def(subtbl_masks);
     if (subtbl_masks_def->max_entries != netdev_info->max_subtables) {
-        VLOG_ERR("\"subtbl_masks\" map has different max_entries from \"flow_table\"");
+        VLOG_ERR("\"subtbl_masks\" map has different max_entries from "
+                 "\"flow_table\"");
         goto err;
     }
     netdev_info->subtable_mask_size = subtbl_masks_def->value_size;
@@ -1297,7 +1298,8 @@ netdev_xdp_uninit_flow_api(struct netdev *netdev)
     if (!get_output_map_fd(obj, &output_map_fd)) {
         bpf_map_delete_elem(output_map_fd, &devmap_idx);
     } else {
-        VLOG_WARN("%s: Failed to get output_map fd on uninitializing xdp flow api",
+        VLOG_WARN("%s: Failed to get output_map fd on uninitializing xdp "
+                  "flow api",
                   netdev_get_name(netdev));
     }
 

@@ -326,7 +326,6 @@ xdp_preload(struct netdev *netdev, struct bpf_object *obj)
     }
 
     if (ovsthread_once_start(&output_map_once)) {
-        /* XXX: close output_map_fd somewhere? */
         output_map_fd = bpf_create_map_name(BPF_MAP_TYPE_DEVMAP, "output_map",
                                             sizeof(int), sizeof(int),
                                             XDP_MAX_PORTS, 0);
