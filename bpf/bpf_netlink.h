@@ -54,7 +54,8 @@ bpf_map_nl_attr_next_offset(void *start, size_t offset, size_t max_len)
 }
 
 /* NOTE: (IDX) < (MAX_ATTRS) is mandatory for verifier */
-#define BPF_MAP_NL_ATTR_FOR_EACH(OFF, ATTRS, START, END, IDX, MAX_ATTRS, MAX_LEN) \
+#define BPF_MAP_NL_ATTR_FOR_EACH(OFF, ATTRS, START, END, IDX, MAX_ATTRS, \
+                                 MAX_LEN) \
     for ((IDX) = 0, (OFF) = (void *)(ATTRS) - (START); \
          (IDX) < (MAX_ATTRS) && (OFF) < (END) - (START); \
          (IDX)++, (OFF) = bpf_map_nl_attr_next_offset(START, OFF, MAX_LEN))

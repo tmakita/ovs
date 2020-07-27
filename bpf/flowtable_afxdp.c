@@ -92,7 +92,7 @@ struct xdp_miniflow {
 #define _XDP_ACTION_CONTINUE -1
 
 /* Supported actions */
-/* XXX: This size should be uint16_t but needs to be int as kernel has a bug
+/* NOTE: This size should be uint16_t but needs to be int as kernel has a bug
  * in btf_enum_check_member() that assumes enum size is sizeof(int), which
  * causes an error when loading BTF if we use uint16_t here */
 enum action_attrs : uint32_t {
@@ -538,8 +538,8 @@ upcall:
     attrs = xdp_flow_actions(&xdp_actions->header);
     start = xdp_actions;
     end = (void *)attrs + actions_len;
-    BPF_MAP_NL_ATTR_FOR_EACH(offset, attrs, start, end, i, XDP_MAX_ACTIONS,
-                             XDP_MAX_ACTIONS_LEN) {
+    BPF_MAP_NL_ATTR_FOR_EACH (offset, attrs, start, end, i, XDP_MAX_ACTIONS,
+                              XDP_MAX_ACTIONS_LEN) {
         uint16_t type;
         int act;
         struct nlattr *nla;
