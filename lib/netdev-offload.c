@@ -174,34 +174,49 @@ netdev_flow_api_equals(const struct netdev *netdev1,
 static int
 netdev_assign_flow_api(struct netdev *netdev)
 {
-    struct netdev_registered_flow_api *rfa, *current_rfa = NULL;
+    struct netdev_registered_flow_api *rfa;
+    const char *flow_api_driver = netdev_flow_api_driver;
+
+    if (!flow_api_driver) {
+        flow_api_driver = FLOW_API_DRIVER_DEFAULT;
+    }
 
     CMAP_FOR_EACH (rfa, cmap_node, &netdev_flow_apis) {
-        if (netdev_flow_api_driver &&
-            strcmp(netdev_flow_api_driver, rfa->flow_api->type)) {
+        if (strcmp(flow_api_driver, rfa->flow_api->type)) {
             continue;
         }
         if (!rfa->flow_api->init_flow_api(netdev)) {
-            if (!current_rfa ||
-                (!netdev_flow_api_driver &&
-                 !strcmp(FLOW_API_DRIVER_DEFAULT, rfa->flow_api->type))) {
-                if (current_rfa && current_rfa->flow_api->uninit_flow_api) {
-                    current_rfa->flow_api->uninit_flow_api(netdev);
-                }
-                current_rfa = rfa;
-            }
-        } else {
-            VLOG_DBG("%s: flow API '%s' is not suitable.",
-                     netdev_get_name(netdev), rfa->flow_api->type);
+            goto found;
         }
+        VLOG_DBG("%s: flow API '%s' is not suitable.",
+                 netdev_get_name(netdev), rfa->flow_api->type);
+        if (netdev_flow_api_driver) {
+            goto err;
+        }
+        break;
     }
-    if (current_rfa) {
-        ovs_refcount_ref(&current_rfa->refcnt);
-        ovsrcu_set(&netdev->flow_api, current_rfa->flow_api);
-        VLOG_INFO("%s: Assigned flow API '%s'.",
-                  netdev_get_name(netdev), current_rfa->flow_api->type);
-        return 0;
+    if (netdev_flow_api_driver) {
+        VLOG_DBG("%s: flow API '%s' is not found.",
+                 netdev_get_name(netdev), netdev_flow_api_driver);
+        goto err;
     }
+
+    CMAP_FOR_EACH (rfa, cmap_node, &netdev_flow_apis) {
+        if (!strcmp(flow_api_driver, rfa->flow_api->type)) {
+            continue;
+        }
+        if (!rfa->flow_api->init_flow_api(netdev)) {
+found:
+            ovs_refcount_ref(&rfa->refcnt);
+            ovsrcu_set(&netdev->flow_api, rfa->flow_api);
+            VLOG_INFO("%s: Assigned flow API '%s'.",
+                      netdev_get_name(netdev), rfa->flow_api->type);
+            return 0;
+        }
+        VLOG_DBG("%s: flow API '%s' is not suitable.",
+                 netdev_get_name(netdev), rfa->flow_api->type);
+    }
+err:
     VLOG_INFO("%s: No suitable flow API found.", netdev_get_name(netdev));
 
     return -1;
