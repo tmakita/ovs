@@ -8,7 +8,7 @@
 AUTOMAKE_OPTIONS = foreign subdir-objects
 ACLOCAL_AMFLAGS = -I m4
 SUBDIRS = datapath
-if HAVE_BPF
+if HAVE_XDP_OFFLOAD
 SUBDIRS += bpf
 endif
 

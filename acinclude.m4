@@ -301,21 +301,24 @@ AC_DEFUN([OVS_CHECK_LINUX_AF_XDP], [
   AM_CONDITIONAL([HAVE_AF_XDP], test "$AF_XDP_ENABLE" = true)
 ])
 
-dnl OVS_CHECK_LINUX_BPF
+dnl OVS_CHECK_LINUX_XDP_OFFLOAD
 dnl
 dnl Check both llvm and libbpf support
-AC_DEFUN([OVS_CHECK_LINUX_BPF], [
-  AC_ARG_ENABLE([bpf],
-                [AC_HELP_STRING([--enable-bpf],
-                                [Compile reference eBPF programs for XDP])],
-                [], [enable_bpf=no])
-  AC_MSG_CHECKING([whether BPF is enabled])
-  if test "$enable_bpf" != yes; then
+AC_DEFUN([OVS_CHECK_LINUX_XDP_OFFLOAD], [
+  AC_ARG_ENABLE([xdp_offload],
+                [AC_HELP_STRING([--enable-xdp-offload],
+                                [Compile XDP offload and reference eBPF programs])],
+                [], [enable_xdp_offload=no])
+  AC_MSG_CHECKING([whether XDP offload is enabled])
+  if test "$enable_xdp_offload" != yes; then
     AC_MSG_RESULT([no])
-    BPF_ENABLE=false
+    XDP_OFFLOAD_ENABLE=false
   else
+    if test "$enable_afxdp" == no; then
+      AC_MSG_ERROR([XDP offload depends on afxdp. Please add --enable-afxdp.])
+    fi
     AC_MSG_RESULT([yes])
-    BPF_ENABLE=true
+    XDP_OFFLOAD_ENABLE=true
 
     AC_CHECK_PROG(CLANG_CHECK, clang, yes)
     AS_IF([test X"$CLANG_CHECK" != X"yes"],
@@ -352,10 +355,10 @@ AC_DEFUN([OVS_CHECK_LINUX_BPF], [
       AC_MSG_ERROR([LLVM does not support BTF DATASEC])
     fi
 
-    AC_DEFINE([HAVE_BPF], [1],
-              [Define to 1 if BPF compilation is available and enabled.])
+    AC_DEFINE([HAVE_XDP_OFFLOAD], [1],
+              [Define to 1 if XDP offload compilation is available and enabled.])
   fi
-  AM_CONDITIONAL([HAVE_BPF], test "$BPF_ENABLE" = true)
+  AM_CONDITIONAL([HAVE_XDP_OFFLOAD], test "$XDP_OFFLOAD_ENABLE" = true)
 ])
 
 dnl OVS_CHECK_DPDK
