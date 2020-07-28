@@ -83,7 +83,7 @@ struct netdev_flow_api {
     int (*flow_del)(struct netdev *, const ovs_u128 *ufid,
                     struct dpif_flow_stats *);
 
-    /* Initializies the netdev flow api.
+    /* Initializes the netdev flow api.
      * Return 0 if successful, otherwise returns a positive errno value. */
     int (*init_flow_api)(struct netdev *);
 
