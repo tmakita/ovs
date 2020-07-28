@@ -1499,8 +1499,16 @@ libbpf_print(enum libbpf_print_level level,
 
 int netdev_afxdp_init(void)
 {
-    libbpf_set_print(libbpf_print);
-    return netdev_register_flow_api_provider(&netdev_offload_xdp);
+    static struct ovsthread_once once = OVSTHREAD_ONCE_INITIALIZER;
+
+    if (ovsthread_once_start(&once)) {
+        libbpf_set_print(libbpf_print);
+        if (netdev_register_flow_api_provider(&netdev_offload_xdp)) {
+            VLOG_WARN("Failed to register XDP flow api provider");
+        }
+        ovsthread_once_done(&once);
+    }
+    return 0;
 }
 
 int
