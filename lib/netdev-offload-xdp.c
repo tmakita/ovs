@@ -79,7 +79,7 @@ struct devmap_idx_data {
 };
 
 
-/* Free entry managemant for list implementation using array */
+/* Free entry management for list implementation using array */
 
 static void
 init_subtbl_masks_free_slot(struct netdev_info *netdev_info)
