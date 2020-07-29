@@ -1,6 +1,16 @@
 AUTOMAKE_OPTIONS = foreign
 
-EXTRA_DIST = flowtable_afxdp.c bpf_compiler.h bpf_miniflow.h bpf_netlink.h \
+noinst_DATA = \
+	flowtable_afxdp.o
+
+sources = \
+	flowtable_afxdp.c
+
+EXTRA_DIST = \
+	$(sources) \
+	bpf_compiler.h \
+	bpf_miniflow.h \
+	bpf_netlink.h \
 	bpf_workaround.h
 
 # The following is based on commands for the Automake "distdir" target.
@@ -13,6 +23,14 @@ distfiles: Makefile
 	      -e "s|^$$topsrcdirstrip/|$(top_builddir)/|;t" | \
 	  LC_ALL=C sort -u > $@
 CLEANFILES = distfiles
+
+depdir := .deps
+DEPFLAGS = -MT $*.o -MMD -MP -MF $(depdir)/$*.d
+
+$(depdir): ; @mkdir -p $@
+
+clean-local:
+	-rm -rf $(depdir)
 
 CLANG ?= clang
 LLC ?= llc
@@ -45,9 +63,11 @@ AM_CFLAGS += -Wno-compare-distinct-pointer-types
 AM_CFLAGS += -g
 AM_CFLAGS += -O2
 
-SUFFIXES = .ll
-%.ll: %.c
-	$(CLANG) $(AM_CPPFLAGS) $(AM_CFLAGS) -S \
+%.o: %.c
+
+SUFFIXES+ = .ll
+%.ll: %.c $(depdir)/%.d | $(depdir)
+	$(CLANG) $(DEPFLAGS) $(AM_CPPFLAGS) $(AM_CFLAGS) -S \
 		-target bpf -emit-llvm -c $< -o $@
 CLEANFILES += *.ll
 
@@ -55,7 +75,6 @@ CLEANFILES += *.ll
 	$(LLC) -march=bpf $(LLC_FLAGS) -filetype=obj -o $@ $<
 CLEANFILES += *.o
 
-flowtable_afxdp.o: flowtable_afxdp.c bpf_compiler.h bpf_miniflow.h \
-	bpf_netlink.h bpf_workaround.h
-
-all-local: flowtable_afxdp.o
+depfiles := $(sources:%.c=$(depdir)/%.d)
+$(depfiles):
+include $(wildcard $(depfiles))
