@@ -1,10 +1,12 @@
 AUTOMAKE_OPTIONS = foreign
 
 noinst_DATA = \
-	flowtable_afxdp.o
+	flowtable_afxdp.o \
+	xdp_noop.o
 
 sources = \
-	flowtable_afxdp.c
+	flowtable_afxdp.c \
+	xdp_noop.c
 
 EXTRA_DIST = \
 	$(sources) \
@@ -60,14 +62,15 @@ AM_CFLAGS += -Wshadow
 AM_CFLAGS += -Wcast-align
 AM_CFLAGS += -Wno-unused-value
 AM_CFLAGS += -Wno-compare-distinct-pointer-types
-AM_CFLAGS += -g
 AM_CFLAGS += -O2
 
 %.o: %.c
 
 SUFFIXES+ = .ll
+# Remove BTF for xdp_noop so that ip command can attach the program
 %.ll: %.c $(depdir)/%.d | $(depdir)
-	$(CLANG) $(DEPFLAGS) $(AM_CPPFLAGS) $(AM_CFLAGS) -S \
+	$(CLANG) $(DEPFLAGS) $(AM_CPPFLAGS) $(AM_CFLAGS) \
+		$(if $(subst xdp_noop,,$*),-g,) -S \
 		-target bpf -emit-llvm -c $< -o $@
 CLEANFILES += *.ll
 
