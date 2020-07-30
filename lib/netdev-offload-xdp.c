@@ -72,7 +72,7 @@ struct netdev_xdp_info {
     struct id_pool *free_slots;
 };
 
-static struct hmap devmap_idx_table = HMAP_INITIALIZER(&devmap_idx_table);
+static struct id_pool *devmap_idx_pool;
 
 struct devmap_idx_data {
     struct hmap_node node;
@@ -468,7 +468,6 @@ get_netdev_xdp_info(struct netdev *netdev)
     return netdev_xdp_info;
 }
 
-
 /* Convert odp_port to devmap_idx in output action */
 static int
 convert_port_to_devmap_idx(struct nlattr *actions, size_t actions_len)
@@ -509,62 +508,6 @@ convert_port_to_devmap_idx(struct nlattr *actions, size_t actions_len)
     return 0;
 }
 
-static struct devmap_idx_data *
-find_devmap_idx(int devmap_idx)
-{
-    struct devmap_idx_data *data;
-    size_t hash = hash_bytes(&devmap_idx, sizeof devmap_idx, 0);
-
-    HMAP_FOR_EACH_WITH_HASH (data, node, hash, &devmap_idx_table) {
-        if (devmap_idx == data->devmap_idx) {
-            return data;
-        }
-    }
-
-    return NULL;
-}
-
-static int
-get_new_devmap_idx(int *pidx)
-{
-    static int max_devmap_idx = 0;
-    int offset;
-
-    for (offset = 0; offset < XDP_MAX_PORTS; offset++) {
-        int devmap_idx = max_devmap_idx++;
-
-        if (max_devmap_idx >= XDP_MAX_PORTS) {
-            max_devmap_idx -= XDP_MAX_PORTS;
-        }
-
-        if (!find_devmap_idx(devmap_idx)) {
-            struct devmap_idx_data *data;
-            size_t hash = hash_bytes(&devmap_idx, sizeof devmap_idx, 0);
-
-            data = xzalloc(sizeof *data);
-            data->devmap_idx = devmap_idx;
-            hmap_insert(&devmap_idx_table, &data->node, hash);
-
-            *pidx = devmap_idx;
-            return 0;
-        }
-    }
-
-    return ENOSPC;
-}
-
-static void
-delete_devmap_idx(int devmap_idx)
-{
-    struct devmap_idx_data *data = find_devmap_idx(devmap_idx);
-
-    if (data) {
-        hmap_remove(&devmap_idx_table, &data->node);
-        free(data);
-    }
-}
-
-
 static int
 get_table_fd(const struct bpf_object *obj, const char *table_name,
              int *pmap_fd)
@@ -1099,6 +1042,7 @@ out:
 static int
 netdev_xdp_init_flow_api(struct netdev *netdev)
 {
+    static struct ovsthread_once devmap_idx_once = OVSTHREAD_ONCE_INITIALIZER;
     struct bpf_object *obj;
     struct btf *btf;
     struct netdev_xdp_info *netdev_xdp_info;
@@ -1107,7 +1051,8 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
     odp_port_t port;
     size_t port_hash;
     int output_map_fd;
-    int err, ifindex, devmap_idx;
+    int err, ifindex;
+    uint32_t devmap_idx;
 
     if (!has_xdp_flowtable(netdev)) {
         return EOPNOTSUPP;
@@ -1128,15 +1073,18 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
         return EEXIST;
     }
 
-    obj = get_xdp_object(netdev);
-    err = get_new_devmap_idx(&devmap_idx);
-    if (err) {
-        VLOG_ERR("Failed to get new devmap idx: %s", ovs_strerror(err));
-        return err;
+    if (ovsthread_once_start(&devmap_idx_once)) {
+        devmap_idx_pool = id_pool_create(0, XDP_MAX_PORTS);
+        ovsthread_once_done(&devmap_idx_once);
+    }
+
+    if (!id_pool_alloc_id(devmap_idx_pool, &devmap_idx)) {
+        VLOG_ERR("Failed to get new devmap idx");
+        return ENOSPC;
     }
 
     netdev_xdp_info = xzalloc(sizeof *netdev_xdp_info);
-    netdev_xdp_info->devmap_idx = devmap_idx;
+    netdev_xdp_info->devmap_idx = (int)devmap_idx;
 
     if (get_odp_port(netdev, &netdev_xdp_info->port) ||
         !netdev_xdp_info->port) {
@@ -1145,6 +1093,7 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
         goto err;
     }
 
+    obj = get_xdp_object(netdev);
     btf = bpf_object__btf(obj);
     if (!btf) {
         VLOG_ERR("BUG: BPF object for netdev \"%s\" does not contain BTF",
@@ -1207,7 +1156,7 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
     }
     if (bpf_map_update_elem(output_map_fd, &devmap_idx, &ifindex, 0)) {
         err = errno;
-        VLOG_ERR("Failed to insert idx %d if %s into output_map: %s",
+        VLOG_ERR("Failed to insert idx %u if %s into output_map: %s",
                  devmap_idx, netdev_get_name(netdev), ovs_strerror(errno));
         goto err;
     }
@@ -1219,7 +1168,7 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
     return 0;
 err:
     free(netdev_xdp_info);
-    delete_devmap_idx(devmap_idx);
+    id_pool_free_id(devmap_idx_pool, devmap_idx);
     return err;
 }
 
@@ -1251,7 +1200,7 @@ netdev_xdp_uninit_flow_api(struct netdev *netdev)
 
     id_pool_destroy(netdev_xdp_info->free_slots);
     free(netdev_xdp_info);
-    delete_devmap_idx(devmap_idx);
+    id_pool_free_id(devmap_idx_pool, (uint32_t)devmap_idx);
 }
 
 const struct netdev_flow_api netdev_offload_xdp = {
