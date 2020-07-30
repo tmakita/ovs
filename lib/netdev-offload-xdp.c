@@ -51,9 +51,10 @@ struct ufid_to_xdp_data {
     uint64_t flow_buf[FLOW_MAX_PACKET_U64S];
 };
 
-static struct hmap netdev_info_table = HMAP_INITIALIZER(&netdev_info_table);
+static struct hmap netdev_xdp_info_table =
+    HMAP_INITIALIZER(&netdev_xdp_info_table);
 
-struct netdev_info {
+struct netdev_xdp_info {
     struct hmap_node port_node;
     struct netdev *netdev;
     odp_port_t port;
@@ -82,53 +83,57 @@ struct devmap_idx_data {
 /* Free entry management for list implementation using array */
 
 static void
-init_subtbl_masks_free_slot(struct netdev_info *netdev_info)
+init_subtbl_masks_free_slot(struct netdev_xdp_info *netdev_xdp_info)
 {
     int i;
-    int max_subtables = netdev_info->max_subtables;
+    int max_subtables = netdev_xdp_info->max_subtables;
 
     for (i = 0; i < max_subtables; i++) {
-        netdev_info->free_slots[max_subtables - 1 - i] = i;
+        netdev_xdp_info->free_slots[max_subtables - 1 - i] = i;
     }
-    netdev_info->free_slot_top = max_subtables - 1;
+    netdev_xdp_info->free_slot_top = max_subtables - 1;
 }
 
 static int
-get_subtbl_masks_free_slot(const struct netdev_info *netdev_info, int *slot)
+get_subtbl_masks_free_slot(const struct netdev_xdp_info *netdev_xdp_info,
+                           int *slot)
 {
-    if (netdev_info->free_slot_top < 0) {
+    if (netdev_xdp_info->free_slot_top < 0) {
         return ENOBUFS;
     }
 
-    *slot = netdev_info->free_slots[netdev_info->free_slot_top];
+    *slot = netdev_xdp_info->free_slots[netdev_xdp_info->free_slot_top];
     return 0;
 }
 
 static int
-add_subtbl_masks_free_slot(struct netdev_info *netdev_info, int slot)
+add_subtbl_masks_free_slot(struct netdev_xdp_info *netdev_xdp_info, int slot)
 {
-    if (netdev_info->free_slot_top >= netdev_info->max_subtables - 1) {
+    int free_slot_top = netdev_xdp_info->free_slot_top;
+    uint32_t max_subtables = netdev_xdp_info->max_subtables;
+
+    if (free_slot_top >= max_subtables - 1) {
         VLOG_ERR_RL(&rl, "BUG: free_slot overflow: top=%d, slot=%d",
-                    netdev_info->free_slot_top, slot);
+                    free_slot_top, slot);
         return EOVERFLOW;
     }
 
-    netdev_info->free_slots[++netdev_info->free_slot_top] = slot;
+    netdev_xdp_info->free_slots[++netdev_xdp_info->free_slot_top] = slot;
     return 0;
 }
 
 static void
-delete_subtbl_masks_free_slot(struct netdev_info *netdev_info, int slot)
+delete_subtbl_masks_free_slot(struct netdev_xdp_info *netdev_xdp_info, int slot)
 {
     int top_slot;
 
-    if (netdev_info->free_slot_top < 0) {
+    if (netdev_xdp_info->free_slot_top < 0) {
         VLOG_ERR_RL(&rl, "BUG: free_slot underflow: top=%d, slot=%d",
-                    netdev_info->free_slot_top, slot);
+                    netdev_xdp_info->free_slot_top, slot);
         return;
     }
 
-    top_slot = netdev_info->free_slots[netdev_info->free_slot_top];
+    top_slot = netdev_xdp_info->free_slots[netdev_xdp_info->free_slot_top];
     if (top_slot != slot) {
         VLOG_ERR_RL(&rl,
                     "BUG: inconsistent free_slot top: top_slot=%d, slot=%d",
@@ -136,7 +141,7 @@ delete_subtbl_masks_free_slot(struct netdev_info *netdev_info, int slot)
         return;
     }
 
-    netdev_info->free_slot_top--;
+    netdev_xdp_info->free_slot_top--;
 }
 
 
@@ -144,10 +149,10 @@ delete_subtbl_masks_free_slot(struct netdev_info *netdev_info, int slot)
     memset(&(MASK).FIELD, 0xff, sizeof (MASK).FIELD)
 
 static int
-probe_supported_keys(struct netdev_info *netdev_info, struct btf *btf,
+probe_supported_keys(struct netdev_xdp_info *netdev_xdp_info, struct btf *btf,
                      uint32_t type)
 {
-    struct miniflow *mf = &netdev_info->supported_keys;
+    struct miniflow *mf = &netdev_xdp_info->supported_keys;
     struct flowmap *map = &mf->map;
     struct flow mask;
     struct btf_member *m;
@@ -247,14 +252,16 @@ probe_supported_keys(struct netdev_info *netdev_info, struct btf *btf,
 }
 
 static bool
-is_supported_keys(struct netdev_info *netdev_info, const struct minimask *mask)
+is_supported_keys(struct netdev_xdp_info *netdev_xdp_info,
+                  const struct minimask *mask)
 {
     const struct miniflow *mf = &mask->masks;
     const uint64_t *p = miniflow_get_values(mf);
     size_t idx;
 
     FLOWMAP_FOR_EACH_INDEX (idx, mf->map) {
-        uint64_t supported = miniflow_get(&netdev_info->supported_keys, idx);
+        uint64_t supported = miniflow_get(&netdev_xdp_info->supported_keys,
+                                          idx);
         if (~supported & *p) {
             VLOG_DBG("Unsupported key: Index=%lu, Supported=%lx, Mask=%lx",
                      idx, supported, *p);
@@ -266,8 +273,8 @@ is_supported_keys(struct netdev_info *netdev_info, const struct minimask *mask)
 }
 
 static int
-probe_supported_actions(struct netdev_info *netdev_info, struct btf *btf,
-                        uint32_t type)
+probe_supported_actions(struct netdev_xdp_info *netdev_xdp_info,
+                        struct btf *btf, uint32_t type)
 {
     const struct btf_type *pt, *t;
     const struct btf_enum *v;
@@ -292,7 +299,7 @@ probe_supported_actions(struct netdev_info *netdev_info, struct btf *btf,
         return EINVAL;
     }
 
-    netdev_info->supported_actions = 0;
+    netdev_xdp_info->supported_actions = 0;
     v = btf_enum(t);
     for (i = 0; i < btf_vlen(t); i++) {
         const char *name = btf__name_by_offset(btf, v[i].name_off);
@@ -305,7 +312,7 @@ probe_supported_actions(struct netdev_info *netdev_info, struct btf *btf,
         case OVS_ACTION_ATTR_OUTPUT:
         case OVS_ACTION_ATTR_PUSH_VLAN:
         case OVS_ACTION_ATTR_POP_VLAN:
-            netdev_info->supported_actions |= (1 << v[i].val);
+            netdev_xdp_info->supported_actions |= (1 << v[i].val);
             break;
         default:
             VLOG_ERR("Action \"%s\" (%d) is not supported",
@@ -318,7 +325,7 @@ probe_supported_actions(struct netdev_info *netdev_info, struct btf *btf,
 }
 
 static bool
-is_supported_actions(struct netdev_info *netdev_info,
+is_supported_actions(struct netdev_xdp_info *netdev_xdp_info,
                      const struct nlattr *actions, size_t actions_len)
 {
     const struct nlattr *a;
@@ -328,14 +335,14 @@ is_supported_actions(struct netdev_info *netdev_info,
     NL_ATTR_FOR_EACH_UNSAFE (a, left, actions, actions_len) {
         int type = nl_attr_type(a);
 
-        if (!(netdev_info->supported_actions & (1 << type))) {
+        if (!(netdev_xdp_info->supported_actions & (1 << type))) {
             VLOG_DBG("Unsupported action: %d", type);
             return false;
         }
         actions_num++;
     }
 
-    if (actions_num > netdev_info->max_actions) {
+    if (actions_num > netdev_xdp_info->max_actions) {
         VLOG_DBG("Too many actions: %d", actions_num);
         return false;
     }
@@ -343,7 +350,7 @@ is_supported_actions(struct netdev_info *netdev_info,
 }
 
 static int
-probe_max_actions(struct netdev_info *netdev_info, struct btf *btf,
+probe_max_actions(struct netdev_xdp_info *netdev_xdp_info, struct btf *btf,
                   uint32_t type)
 {
     const struct btf_type *pt, *at;
@@ -368,13 +375,13 @@ probe_max_actions(struct netdev_info *netdev_info, struct btf *btf,
         return EINVAL;
     }
     arr = btf_array(at);
-    netdev_info->max_actions = arr->nelems;
+    netdev_xdp_info->max_actions = arr->nelems;
 
     return 0;
 }
 
 static int
-probe_meta_info(struct netdev_info *netdev_info, struct btf *btf)
+probe_meta_info(struct netdev_xdp_info *netdev_xdp_info, struct btf *btf)
 {
     int32_t meta_sec_id;
     struct btf_var_secinfo *vi;
@@ -437,18 +444,18 @@ probe_meta_info(struct netdev_info *netdev_info, struct btf *btf)
             return EINVAL;
         }
         if (!strcmp(name, "supported_keys")) {
-            err = probe_supported_keys(netdev_info, btf, m->type);
+            err = probe_supported_keys(netdev_xdp_info, btf, m->type);
             if (err) {
                 return err;
             }
             supported_keys_found = true;
         } else if (!strcmp(name, "supported_actions")) {
-            err = probe_supported_actions(netdev_info, btf, m->type);
+            err = probe_supported_actions(netdev_xdp_info, btf, m->type);
             if (err) {
                 return err;
             }
         } else if (!strcmp(name, "max_actions")) {
-            err = probe_max_actions(netdev_info, btf, m->type);
+            err = probe_max_actions(netdev_xdp_info, btf, m->type);
             if (err) {
                 return err;
             }
@@ -462,11 +469,11 @@ probe_meta_info(struct netdev_info *netdev_info, struct btf *btf)
         VLOG_ERR("\"supported_keys\" field not found in \"meta_info\"");
         return EINVAL;
     }
-    if (!netdev_info->supported_actions) {
+    if (!netdev_xdp_info->supported_actions) {
         VLOG_ERR("\"supported_actions\" field not found in \"meta_info\"");
         return EINVAL;
     }
-    if (!netdev_info->max_actions) {
+    if (!netdev_xdp_info->max_actions) {
         VLOG_ERR("\"max_actions\" field not found in \"meta_info\"");
         return EINVAL;
     }
@@ -475,16 +482,16 @@ probe_meta_info(struct netdev_info *netdev_info, struct btf *btf)
 }
 
 
-static struct netdev_info *
-find_netdev_info(odp_port_t port)
+static struct netdev_xdp_info *
+find_netdev_xdp_info(odp_port_t port)
 {
     size_t port_hash = hash_bytes(&port, sizeof port, 0);
-    struct netdev_info *netdev_info;
+    struct netdev_xdp_info *netdev_xdp_info;
 
-    HMAP_FOR_EACH_WITH_HASH (netdev_info, port_node, port_hash,
-                             &netdev_info_table) {
-        if (port == netdev_info->port) {
-            return netdev_info;
+    HMAP_FOR_EACH_WITH_HASH (netdev_xdp_info, port_node, port_hash,
+                             &netdev_xdp_info_table) {
+        if (port == netdev_xdp_info->port) {
+            return netdev_xdp_info;
         }
     }
 
@@ -507,23 +514,23 @@ get_odp_port(struct netdev *netdev, odp_port_t *port)
     return 0;
 }
 
-static struct netdev_info *
-get_netdev_info(struct netdev *netdev)
+static struct netdev_xdp_info *
+get_netdev_xdp_info(struct netdev *netdev)
 {
-    struct netdev_info *netdev_info;
+    struct netdev_xdp_info *netdev_xdp_info;
     odp_port_t port;
 
     if (get_odp_port(netdev, &port)) {
         return NULL;
     }
 
-    netdev_info = find_netdev_info(port);
-    if (!netdev_info) {
-        VLOG_ERR_RL(&rl, "Failed to find netdev_info for %s",
+    netdev_xdp_info = find_netdev_xdp_info(port);
+    if (!netdev_xdp_info) {
+        VLOG_ERR_RL(&rl, "Failed to find netdev_xdp_info for %s",
                     netdev_get_name(netdev));
     }
 
-    return netdev_info;
+    return netdev_xdp_info;
 }
 
 
@@ -545,12 +552,12 @@ convert_port_to_devmap_idx(struct nlattr *actions, size_t actions_len)
 
         if (type == OVS_ACTION_ATTR_OUTPUT) {
             odp_port_t *port;
-            struct netdev_info *netdev_info;
+            struct netdev_xdp_info *netdev_xdp_info;
 
             port = CONST_CAST(odp_port_t *,
                               nl_attr_get_unspec(a, sizeof(odp_port_t)));
-            netdev_info = find_netdev_info(*port);
-            if (!netdev_info) {
+            netdev_xdp_info = find_netdev_xdp_info(*port);
+            if (!netdev_xdp_info) {
                 VLOG_DBG("Cannot output to port %u without XDP prog attached",
                          *port);
                 return EOPNOTSUPP;
@@ -559,7 +566,7 @@ convert_port_to_devmap_idx(struct nlattr *actions, size_t actions_len)
              * XDP program enabled. Linux netdev community is considering
              * adding feature detection in XDP */
 
-            *port = u32_to_odp(netdev_info->devmap_idx);
+            *port = u32_to_odp(netdev_xdp_info->devmap_idx);
             output_seen = true;
         }
     }
@@ -705,10 +712,11 @@ get_output_map_fd(const struct bpf_object *obj, int *output_map_fd)
 static int
 netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
                     struct nlattr *actions, size_t actions_len,
-                    const ovs_u128 *ufid, struct offload_info *info OVS_UNUSED,
+                    const ovs_u128 *ufid,
+                    struct offload_info *info OVS_UNUSED,
                     struct dpif_flow_stats *stats OVS_UNUSED)
 {
-    struct netdev_info *netdev_info;
+    struct netdev_xdp_info *netdev_xdp_info;
     struct bpf_object *obj = get_xdp_object(netdev);
     struct minimatch minimatch;
     struct match *match;
@@ -724,8 +732,8 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
     int cnt, idx, pidx;
     int err;
 
-    netdev_info = get_netdev_info(netdev);
-    if (!netdev_info) {
+    netdev_xdp_info = get_netdev_xdp_info(netdev);
+    if (!netdev_xdp_info) {
         return ENOENT;
     }
 
@@ -753,14 +761,14 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
     free(match);
 
     key_size = MINIFLOW_VALUES_SIZE(miniflow_n_values(minimatch.flow));
-    if (key_size > netdev_info->key_size) {
+    if (key_size > netdev_xdp_info->key_size) {
         err = EOPNOTSUPP;
         VLOG_DBG_RL(&rl, "Key size too big");
         goto err;
     }
 
     if (sizeof(struct xdp_flow_actions_header) + actions_len >
-        netdev_info->max_actions_len) {
+        netdev_xdp_info->max_actions_len) {
         err = EOPNOTSUPP;
         VLOG_DBG_RL(&rl, "Actions size too big");
         goto err;
@@ -774,13 +782,13 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
         *flow_u64++ &= *mask_u64++;
     }
 
-    if (!is_supported_keys(netdev_info, minimatch.mask)) {
+    if (!is_supported_keys(netdev_xdp_info, minimatch.mask)) {
         err = EOPNOTSUPP;
         VLOG_DBG_RL(&rl, "Key not supported");
         goto err;
     }
 
-    if (!is_supported_actions(netdev_info, actions, actions_len)) {
+    if (!is_supported_actions(netdev_xdp_info, actions, actions_len)) {
         err = EOPNOTSUPP;
         VLOG_DBG_RL(&rl, "Actions not supported");
         goto err;
@@ -788,7 +796,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
 
     /* subtables in XDP is hash table whose key is miniflow value and whose
      * value is actions preceded by actions_len */
-    xdp_actions = xzalloc(netdev_info->max_actions_len);
+    xdp_actions = xzalloc(netdev_xdp_info->max_actions_len);
     xdp_actions->actions_len = actions_len;
     memcpy(xdp_flow_actions(xdp_actions), actions, actions_len);
 
@@ -819,12 +827,12 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
         goto err_actions;
     }
 
-    entry = xzalloc(netdev_info->subtable_mask_size);
-    pentry = xzalloc(netdev_info->subtable_mask_size);
+    entry = xzalloc(netdev_xdp_info->subtable_mask_size);
+    pentry = xzalloc(netdev_xdp_info->subtable_mask_size);
 
     /* Iterate subtable mask list implemented using array */
     idx = head;
-    for (cnt = 0; cnt < netdev_info->max_subtables; cnt++) {
+    for (cnt = 0; cnt < netdev_xdp_info->max_subtables; cnt++) {
         if (idx == XDP_SUBTABLES_TAIL) {
             break;
         }
@@ -854,7 +862,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
                 goto err_entry;
             }
 
-            tmp_values = xzalloc(netdev_info->key_size);
+            tmp_values = xzalloc(netdev_xdp_info->key_size);
             memcpy(tmp_values, miniflow_get_values(minimatch.flow), key_size);
             if (bpf_map_update_elem(subtbl_fd, tmp_values, xdp_actions, 0)) {
                 err = errno;
@@ -878,12 +886,12 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
             goto out;
         }
 
-        memcpy(pentry, entry, netdev_info->subtable_mask_size);
+        memcpy(pentry, entry, netdev_xdp_info->subtable_mask_size);
         pidx = idx;
         idx = entry->next;
     }
 
-    if (cnt == netdev_info->max_subtables && idx != XDP_SUBTABLES_TAIL) {
+    if (cnt == netdev_xdp_info->max_subtables && idx != XDP_SUBTABLES_TAIL) {
         err = EINVAL;
         VLOG_ERR_RL(&rl,
                     "Cannot lookup subtbl_masks: Broken subtbl_masks list");
@@ -892,7 +900,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
 
     /* Subtable was not found. Create a new one */
 
-    err = get_subtbl_masks_free_slot(netdev_info, &free_slot);
+    err = get_subtbl_masks_free_slot(netdev_xdp_info, &free_slot);
     if (err) {
         goto err_entry;
     }
@@ -911,16 +919,16 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
     }
 
     if (snprintf(subtbl_name, BPF_OBJ_NAME_LEN, "subtbl_%d_%d",
-                 netdev_info->port, free_slot) < 0) {
+                 netdev_xdp_info->port, free_slot) < 0) {
         err = errno;
         VLOG_ERR_RL(&rl, "snprintf for subtable name failed: %s",
                     ovs_strerror(errno));
         goto err_entry;
     }
     subtbl_fd = bpf_create_map_name(BPF_MAP_TYPE_HASH, subtbl_name,
-                                    netdev_info->key_size,
-                                    netdev_info->max_actions_len,
-                                    netdev_info->max_entries, 0);
+                                    netdev_xdp_info->key_size,
+                                    netdev_xdp_info->max_actions_len,
+                                    netdev_xdp_info->max_entries, 0);
     if (subtbl_fd < 0) {
         err = errno;
         VLOG_ERR_RL(&rl, "map creation for subtbl failed: %s",
@@ -928,7 +936,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
         goto err_entry;
     }
 
-    tmp_values = xzalloc(netdev_info->key_size);
+    tmp_values = xzalloc(netdev_xdp_info->key_size);
     memcpy(tmp_values, miniflow_get_values(minimatch.flow), key_size);
     if (bpf_map_update_elem(subtbl_fd, tmp_values, xdp_actions, 0)) {
         err = errno;
@@ -960,7 +968,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
             goto err_subtbl;
         }
     }
-    delete_subtbl_masks_free_slot(netdev_info, free_slot);
+    delete_subtbl_masks_free_slot(netdev_xdp_info, free_slot);
 out:
     hash = hash_bytes(ufid, sizeof *ufid, 0);
     data = xzalloc(sizeof *data);
@@ -1007,7 +1015,7 @@ static int
 netdev_xdp_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
                     struct dpif_flow_stats *stats OVS_UNUSED)
 {
-    struct netdev_info *netdev_info;
+    struct netdev_xdp_info *netdev_xdp_info;
     struct bpf_object *obj = get_xdp_object(netdev);
     size_t hash;
     struct ufid_to_xdp_data *data;
@@ -1016,8 +1024,8 @@ netdev_xdp_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
     int err, cnt, idx, pidx;
     __u32 id;
 
-    netdev_info = get_netdev_info(netdev);
-    if (!netdev_info) {
+    netdev_xdp_info = get_netdev_xdp_info(netdev);
+    if (!netdev_xdp_info) {
         return ENOENT;
     }
 
@@ -1056,12 +1064,12 @@ netdev_xdp_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
     hmap_remove(&ufid_to_xdp, &data->ufid_node);
     ovs_mutex_unlock(&ufid_lock);
 
-    entry = xzalloc(netdev_info->subtable_mask_size);
-    pentry = xzalloc(netdev_info->subtable_mask_size);
+    entry = xzalloc(netdev_xdp_info->subtable_mask_size);
+    pentry = xzalloc(netdev_xdp_info->subtable_mask_size);
 
     /* Iterate subtable mask list implemented using array */
     idx = head;
-    for (cnt = 0; cnt < netdev_info->max_subtables; cnt++) {
+    for (cnt = 0; cnt < netdev_xdp_info->max_subtables; cnt++) {
         if (idx == XDP_SUBTABLES_TAIL) {
             err = ENOENT;
             VLOG_ERR_RL(&rl, "Cannot lookup subtbl_masks: %s",
@@ -1080,12 +1088,12 @@ netdev_xdp_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
             break;
         }
 
-        memcpy(pentry, entry, netdev_info->subtable_mask_size);
+        memcpy(pentry, entry, netdev_xdp_info->subtable_mask_size);
         pidx = idx;
         idx = entry->next;
     }
 
-    if (cnt == netdev_info->max_subtables) {
+    if (cnt == netdev_xdp_info->max_subtables) {
         err = ENOENT;
         VLOG_ERR_RL(&rl,
                     "Cannot lookup subtbl_masks: Broken subtbl_masks list");
@@ -1141,7 +1149,7 @@ netdev_xdp_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
     }
 
     bpf_map_delete_elem(flow_table_fd, &idx);
-    err = add_subtbl_masks_free_slot(netdev_info, idx);
+    err = add_subtbl_masks_free_slot(netdev_xdp_info, idx);
     if (err) {
         VLOG_ERR_RL(&rl, "Cannot add subtbl_masks free slot: %s",
                     ovs_strerror(err));
@@ -1159,7 +1167,7 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
 {
     struct bpf_object *obj;
     struct btf *btf;
-    struct netdev_info *netdev_info;
+    struct netdev_xdp_info *netdev_xdp_info;
     struct bpf_map *flow_table, *subtbl_template, *subtbl_masks;
     const struct bpf_map_def *flow_table_def, *subtbl_def, *subtbl_masks_def;
     odp_port_t port;
@@ -1179,8 +1187,8 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
     }
     port = netdev_ifindex_to_odp_port(ifindex);
 
-    netdev_info = find_netdev_info(port);
-    if (netdev_info) {
+    netdev_xdp_info = find_netdev_xdp_info(port);
+    if (netdev_xdp_info) {
         VLOG_ERR("xdp offload is already initialized for netdev %s",
                  netdev_get_name(netdev));
         return EEXIST;
@@ -1193,10 +1201,11 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
         return err;
     }
 
-    netdev_info = xzalloc(sizeof *netdev_info);
-    netdev_info->devmap_idx = devmap_idx;
+    netdev_xdp_info = xzalloc(sizeof *netdev_xdp_info);
+    netdev_xdp_info->devmap_idx = devmap_idx;
 
-    if (get_odp_port(netdev, &netdev_info->port) || !netdev_info->port) {
+    if (get_odp_port(netdev, &netdev_xdp_info->port) ||
+        !netdev_xdp_info->port) {
         VLOG_ERR("Failed to get odp_port for %s", netdev_get_name(netdev));
         err = ENOENT;
         goto err;
@@ -1210,7 +1219,7 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
         goto err;
     }
 
-    err = probe_meta_info(netdev_info, btf);
+    err = probe_meta_info(netdev_xdp_info, btf);
     if (err) {
         VLOG_ERR("Failed to initialize xdp offload metadata for %s",
                  netdev_get_name(netdev));
@@ -1229,7 +1238,7 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
                  XDP_MAX_SUBTABLES);
         goto err;
     }
-    netdev_info->max_subtables = flow_table_def->max_entries;
+    netdev_xdp_info->max_subtables = flow_table_def->max_entries;
 
     subtbl_template = bpf_object__find_map_by_name(obj, "subtbl_template");
     if (!subtbl_template) {
@@ -1238,9 +1247,9 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
         goto err;
     }
     subtbl_def = bpf_map__def(subtbl_template);
-    netdev_info->key_size = subtbl_def->key_size;
-    netdev_info->max_actions_len = subtbl_def->value_size;
-    netdev_info->max_entries = subtbl_def->max_entries;
+    netdev_xdp_info->key_size = subtbl_def->key_size;
+    netdev_xdp_info->max_actions_len = subtbl_def->value_size;
+    netdev_xdp_info->max_entries = subtbl_def->max_entries;
 
     subtbl_masks = bpf_object__find_map_by_name(obj, "subtbl_masks");
     if (!subtbl_masks) {
@@ -1249,13 +1258,13 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
         goto err;
     }
     subtbl_masks_def = bpf_map__def(subtbl_masks);
-    if (subtbl_masks_def->max_entries != netdev_info->max_subtables) {
+    if (subtbl_masks_def->max_entries != netdev_xdp_info->max_subtables) {
         VLOG_ERR("\"subtbl_masks\" map has different max_entries from "
                  "\"flow_table\"");
         goto err;
     }
-    netdev_info->subtable_mask_size = subtbl_masks_def->value_size;
-    init_subtbl_masks_free_slot(netdev_info);
+    netdev_xdp_info->subtable_mask_size = subtbl_masks_def->value_size;
+    init_subtbl_masks_free_slot(netdev_xdp_info);
 
     err = get_output_map_fd(obj, &output_map_fd);
     if (err) {
@@ -1269,11 +1278,12 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
     }
 
     port_hash = hash_bytes(&port, sizeof port, 0);
-    hmap_insert(&netdev_info_table, &netdev_info->port_node, port_hash);
+    hmap_insert(&netdev_xdp_info_table, &netdev_xdp_info->port_node,
+                port_hash);
 
     return 0;
 err:
-    free(netdev_info);
+    free(netdev_xdp_info);
     delete_devmap_idx(devmap_idx);
     return err;
 }
@@ -1282,18 +1292,19 @@ static void
 netdev_xdp_uninit_flow_api(struct netdev *netdev)
 {
     struct bpf_object *obj;
-    struct netdev_info *netdev_info;
+    struct netdev_xdp_info *netdev_xdp_info;
     int output_map_fd, devmap_idx;
 
-    netdev_info = get_netdev_info(netdev);
-    if (!netdev_info) {
-        VLOG_WARN("%s: netdev_info not found on uninitializing xdp flow api",
+    netdev_xdp_info = get_netdev_xdp_info(netdev);
+    if (!netdev_xdp_info) {
+        VLOG_WARN("%s: netdev_xdp_info not found on uninitializing "
+                  "xdp flow api",
                   netdev_get_name(netdev));
         return;
     }
-    hmap_remove(&netdev_info_table, &netdev_info->port_node);
+    hmap_remove(&netdev_xdp_info_table, &netdev_xdp_info->port_node);
 
-    devmap_idx = netdev_info->devmap_idx;
+    devmap_idx = netdev_xdp_info->devmap_idx;
     obj = get_xdp_object(netdev);
     if (!get_output_map_fd(obj, &output_map_fd)) {
         bpf_map_delete_elem(output_map_fd, &devmap_idx);
@@ -1303,7 +1314,7 @@ netdev_xdp_uninit_flow_api(struct netdev *netdev)
                   netdev_get_name(netdev));
     }
 
-    free(netdev_info);
+    free(netdev_xdp_info);
     delete_devmap_idx(devmap_idx);
 }
 
