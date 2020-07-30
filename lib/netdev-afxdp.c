@@ -281,6 +281,7 @@ get_xdp_object(struct netdev *netdev)
     return dev->xdp_obj;
 }
 
+#ifdef HAVE_XDP_OFFLOAD
 static int
 xdp_preload(struct netdev *netdev, struct bpf_object *obj)
 {
@@ -455,12 +456,13 @@ xdp_preload(struct netdev *netdev, struct bpf_object *obj)
 
     return 0;
 }
+#endif
 
 static int
 xsk_load_prog(struct netdev *netdev, const char *path,
               struct bpf_object **pobj, int *prog_fd)
 {
-    struct netdev_linux *dev = netdev_linux_cast(netdev);
+    struct netdev_linux *dev OVS_UNUSED = netdev_linux_cast(netdev);
     struct bpf_object_open_attr attr = {
         .prog_type = BPF_PROG_TYPE_XDP,
         .file = path,
@@ -494,11 +496,13 @@ xsk_load_prog(struct netdev *netdev, const char *path,
         goto err;
     }
 
+#ifdef HAVE_XDP_OFFLOAD
     if (!xdp_preload(netdev, obj)) {
         VLOG_INFO("%s: Detected flowtable support in XDP program",
                   netdev_get_name(netdev));
         dev->has_xdp_flowtable = true;
     }
+#endif
 
     if (bpf_object__load(obj)) {
         VLOG_ERR("%s: Can't load XDP program at '%s'",
@@ -1503,9 +1507,11 @@ int netdev_afxdp_init(void)
 
     if (ovsthread_once_start(&once)) {
         libbpf_set_print(libbpf_print);
+#ifdef HAVE_XDP_OFFLOAD
         if (netdev_register_flow_api_provider(&netdev_offload_xdp)) {
             VLOG_WARN("Failed to register XDP flow api provider");
         }
+#endif
         ovsthread_once_done(&once);
     }
     return 0;
