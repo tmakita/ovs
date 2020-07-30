@@ -27,6 +27,7 @@
 #include "bpf-util.h"
 #include "dpif.h"
 #include "hash.h"
+#include "id-pool.h"
 #include "netdev.h"
 #include "netdev-offload-provider.h"
 #include "netlink.h"
@@ -68,8 +69,7 @@ struct netdev_xdp_info {
     uint32_t max_actions;
     uint32_t max_actions_len;
     uint32_t max_entries;
-    int free_slot_top;
-    int free_slots[XDP_MAX_SUBTABLES];
+    struct id_pool *free_slots;
 };
 
 static struct hmap devmap_idx_table = HMAP_INITIALIZER(&devmap_idx_table);
@@ -78,71 +78,6 @@ struct devmap_idx_data {
     struct hmap_node node;
     int devmap_idx;
 };
-
-
-/* Free entry management for list implementation using array */
-
-static void
-init_subtbl_masks_free_slot(struct netdev_xdp_info *netdev_xdp_info)
-{
-    int i;
-    int max_subtables = netdev_xdp_info->max_subtables;
-
-    for (i = 0; i < max_subtables; i++) {
-        netdev_xdp_info->free_slots[max_subtables - 1 - i] = i;
-    }
-    netdev_xdp_info->free_slot_top = max_subtables - 1;
-}
-
-static int
-get_subtbl_masks_free_slot(const struct netdev_xdp_info *netdev_xdp_info,
-                           int *slot)
-{
-    if (netdev_xdp_info->free_slot_top < 0) {
-        return ENOBUFS;
-    }
-
-    *slot = netdev_xdp_info->free_slots[netdev_xdp_info->free_slot_top];
-    return 0;
-}
-
-static int
-add_subtbl_masks_free_slot(struct netdev_xdp_info *netdev_xdp_info, int slot)
-{
-    int free_slot_top = netdev_xdp_info->free_slot_top;
-    uint32_t max_subtables = netdev_xdp_info->max_subtables;
-
-    if (free_slot_top >= max_subtables - 1) {
-        VLOG_ERR_RL(&rl, "BUG: free_slot overflow: top=%d, slot=%d",
-                    free_slot_top, slot);
-        return EOVERFLOW;
-    }
-
-    netdev_xdp_info->free_slots[++netdev_xdp_info->free_slot_top] = slot;
-    return 0;
-}
-
-static void
-delete_subtbl_masks_free_slot(struct netdev_xdp_info *netdev_xdp_info, int slot)
-{
-    int top_slot;
-
-    if (netdev_xdp_info->free_slot_top < 0) {
-        VLOG_ERR_RL(&rl, "BUG: free_slot underflow: top=%d, slot=%d",
-                    netdev_xdp_info->free_slot_top, slot);
-        return;
-    }
-
-    top_slot = netdev_xdp_info->free_slots[netdev_xdp_info->free_slot_top];
-    if (top_slot != slot) {
-        VLOG_ERR_RL(&rl,
-                    "BUG: inconsistent free_slot top: top_slot=%d, slot=%d",
-                    top_slot, slot);
-        return;
-    }
-
-    netdev_xdp_info->free_slot_top--;
-}
 
 
 #define FLOW_MASK_FIELD(MASK, FIELD) \
@@ -720,10 +655,10 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
     struct bpf_object *obj = get_xdp_object(netdev);
     struct minimatch minimatch;
     struct match *match;
-    uint32_t key_size;
+    uint32_t key_size, free_slot;
     size_t fidx;
     uint64_t *flow_u64, *mask_u64, *tmp_values;
-    int masks_fd, head_fd, flow_table_fd, subtbl_fd, free_slot, head;
+    int masks_fd, head_fd, flow_table_fd, subtbl_fd, head;
     struct xdp_subtable_mask_header *entry, *pentry;
     struct xdp_flow_actions_header *xdp_actions;
     char subtbl_name[BPF_OBJ_NAME_LEN];
@@ -900,8 +835,8 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
 
     /* Subtable was not found. Create a new one */
 
-    err = get_subtbl_masks_free_slot(netdev_xdp_info, &free_slot);
-    if (err) {
+    if (!id_pool_alloc_id(netdev_xdp_info->free_slots, &free_slot)) {
+        err = ENOBUFS;
         goto err_entry;
     }
 
@@ -915,7 +850,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
         err = errno;
         VLOG_ERR_RL(&rl, "Cannot update subtbl_masks: %s",
                     ovs_strerror(errno));
-        goto err_entry;
+        goto err_slot;
     }
 
     if (snprintf(subtbl_name, BPF_OBJ_NAME_LEN, "subtbl_%d_%d",
@@ -923,7 +858,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
         err = errno;
         VLOG_ERR_RL(&rl, "snprintf for subtable name failed: %s",
                     ovs_strerror(errno));
-        goto err_entry;
+        goto err_slot;
     }
     subtbl_fd = bpf_create_map_name(BPF_MAP_TYPE_HASH, subtbl_name,
                                     netdev_xdp_info->key_size,
@@ -933,7 +868,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
         err = errno;
         VLOG_ERR_RL(&rl, "map creation for subtbl failed: %s",
                     ovs_strerror(errno));
-        goto err_entry;
+        goto err_slot;
     }
 
     tmp_values = xzalloc(netdev_xdp_info->key_size);
@@ -942,7 +877,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
         err = errno;
         VLOG_ERR_RL(&rl, "Cannot insert flow entry: %s", ovs_strerror(errno));
         free(tmp_values);
-        goto err_close;
+        goto err_close_slot;
     }
     free(tmp_values);
 
@@ -950,7 +885,7 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
         err = errno;
         VLOG_ERR_RL(&rl, "Failed to insert subtbl into flow_table: %s",
                     ovs_strerror(errno));
-        goto err_close;
+        goto err_close_slot;
     }
 
     if (cnt == 0) {
@@ -968,7 +903,6 @@ netdev_xdp_flow_put(struct netdev *netdev, struct match *match_,
             goto err_subtbl;
         }
     }
-    delete_subtbl_masks_free_slot(netdev_xdp_info, free_slot);
 out:
     hash = hash_bytes(ufid, sizeof *ufid, 0);
     data = xzalloc(sizeof *data);
@@ -994,8 +928,12 @@ err:
 
 err_subtbl:
     bpf_map_delete_elem(flow_table_fd, &free_slot);
+err_close_slot:
+    close(subtbl_fd);
+err_slot:
+    id_pool_free_id(netdev_xdp_info->free_slots, free_slot);
 
-    goto err_close;
+    goto err_entry;
 }
 
 static int
@@ -1149,11 +1087,7 @@ netdev_xdp_flow_del(struct netdev *netdev, const ovs_u128 *ufid,
     }
 
     bpf_map_delete_elem(flow_table_fd, &idx);
-    err = add_subtbl_masks_free_slot(netdev_xdp_info, idx);
-    if (err) {
-        VLOG_ERR_RL(&rl, "Cannot add subtbl_masks free slot: %s",
-                    ovs_strerror(err));
-    }
+    id_pool_free_id(netdev_xdp_info->free_slots, (uint32_t)idx);
 out:
     free(data);
     free(pentry);
@@ -1264,7 +1198,8 @@ netdev_xdp_init_flow_api(struct netdev *netdev)
         goto err;
     }
     netdev_xdp_info->subtable_mask_size = subtbl_masks_def->value_size;
-    init_subtbl_masks_free_slot(netdev_xdp_info);
+    netdev_xdp_info->free_slots =
+        id_pool_create(0, netdev_xdp_info->max_subtables);
 
     err = get_output_map_fd(obj, &output_map_fd);
     if (err) {
@@ -1314,6 +1249,7 @@ netdev_xdp_uninit_flow_api(struct netdev *netdev)
                   netdev_get_name(netdev));
     }
 
+    id_pool_destroy(netdev_xdp_info->free_slots);
     free(netdev_xdp_info);
     delete_devmap_idx(devmap_idx);
 }
